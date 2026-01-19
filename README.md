@@ -90,10 +90,24 @@ LLM_PROVIDER=local python -m src.pipeline code.c -v
 
 ### Prepare Dataset
 
-**Option A: Sample dataset (10 functions)**
+**Step 1: Download MITRE CWE Knowledge Base**
+```bash
+# Download official CWE database from MITRE
+mkdir -p data/cwe_mitre && cd data/cwe_mitre
+curl -L -o cwec_latest.xml.zip "https://cwe.mitre.org/data/xml/cwec_latest.xml.zip"
+unzip -o cwec_latest.xml.zip && cd ../..
+
+# Parse and extract buffer overflow CWEs (CWE-120, CWE-121, CWE-122, etc.)
+python experiments/parse_cwe_xml.py \
+  --input data/cwe_mitre/cwec_v4.19.xml \
+  --output data/cwe_knowledge_mitre.json
+```
+
+**Step 2: Sample dataset (10 functions)**
 ```bash
 python experiments/prepare_dataset.py --sample-only --output data/juliet_samples/dataset.json
 ```
+
 
 **Option B: Juliet Test Suite (real-world)**
 ```bash
@@ -120,6 +134,12 @@ python experiments/run_experiment.py --approaches mcp_based --output results/
 
 # With local LLM
 LLM_PROVIDER=local python experiments/run_experiment.py --approaches mcp_based --output results/
+```
+
+# Example
+
+```bash
+LLM_PROVIDER=local python experiments/run_experiment.py --dataset data/juliet_samples/juliet_cwe121.json --approaches mcp_based --output results/
 ```
 
 ### Analyze Results
