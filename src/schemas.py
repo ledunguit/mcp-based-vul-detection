@@ -130,6 +130,7 @@ class ValidationCheck(BaseModel):
     """A single validation check result."""
     present: bool
     citation: str
+    confidence: str = "medium"  # strong, medium, weak
 
 
 class JudgeValidation(BaseModel):
@@ -144,6 +145,9 @@ class JudgeVerdict(BaseModel):
     verdict: Verdict
     validation: JudgeValidation
     final_reasoning: str
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    evidence_quality: str = "medium"  # strong, medium, weak
+    hallucination_flags: list[str] = Field(default_factory=list)
 
 
 # === Pipeline Schemas ===

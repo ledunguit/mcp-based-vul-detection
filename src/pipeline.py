@@ -24,15 +24,23 @@ from src.agents.judge import JudgeAgent
 class VulnerabilityPipeline:
     """Main pipeline for vulnerability detection."""
     
-    def __init__(self):
+    def __init__(self, mode: str = "agentic"):
+        """
+        Initialize the pipeline.
+        
+        Args:
+            mode: "agentic" (LLM decides tool calls) or "batch" (all tools at once)
+        """
         self.orchestrator = OrchestratorAgent()
         self.judge = JudgeAgent()
+        self.mode = mode
     
     def analyze(
         self,
         source_code: str,
         function_name: Optional[str] = None,
         ground_truth: Optional[bool] = None,
+        cwe_focus: Optional[str] = None,
     ) -> AnalysisResult:
         """
         Analyze a C function for vulnerabilities.
@@ -41,12 +49,18 @@ class VulnerabilityPipeline:
             source_code: The C source code to analyze
             function_name: Optional name of the function
             ground_truth: Optional ground truth label (True=vulnerable)
+            cwe_focus: Optional CWE to focus on (e.g., "CWE-121")
             
         Returns:
             AnalysisResult with complete analysis data
         """
         # Step 1: Orchestrator analyzes via MCP tools
-        hypothesis, tool_outputs = self.orchestrator.analyze(source_code)
+        if self.mode == "batch":
+            # Batch mode: call all tools at once, then synthesize
+            hypothesis, tool_outputs = self.orchestrator.analyze_batch(source_code, cwe_focus)
+        else:
+            # Agentic mode: LLM decides which tools to call
+            hypothesis, tool_outputs = self.orchestrator.analyze(source_code, cwe_focus)
         
         # Step 2: Judge validates the hypothesis
         verdict = self.judge.validate(hypothesis, tool_outputs, source_code)
@@ -57,11 +71,36 @@ class VulnerabilityPipeline:
         cwe_output = None
         
         if "ast_analyze" in tool_outputs:
-            ast_output = ASTAnalysisOutput(**tool_outputs["ast_analyze"])
+            try:
+                ast_output = ASTAnalysisOutput(**tool_outputs["ast_analyze"])
+            except Exception:
+                pass  # Skip if validation fails
+        
         if "static_analyze" in tool_outputs:
-            static_output = StaticAnalysisOutput(**tool_outputs["static_analyze"])
+            try:
+                static_output = StaticAnalysisOutput(**tool_outputs["static_analyze"])
+            except Exception:
+                pass
+        
         if "cwe_lookup" in tool_outputs:
-            cwe_output = CWEKnowledgeOutput(**tool_outputs["cwe_lookup"])
+            cwe_data = tool_outputs["cwe_lookup"]
+            try:
+                # Handle batch mode format (multiple sinks)
+                if "sinks" in cwe_data and isinstance(cwe_data["sinks"], dict):
+                    # Take the first sink for the structured output
+                    first_sink = next(iter(cwe_data["sinks"].values()), {})
+                    first_sink_name = next(iter(cwe_data["sinks"].keys()), "unknown")
+                    cwe_output = CWEKnowledgeOutput(
+                        sink_function=first_sink_name,
+                        required_safety_checks=first_sink.get("safety_checks", []),
+                        common_patterns=first_sink.get("vulnerability_patterns", []),
+                        description=first_sink.get("description", ""),
+                    )
+                else:
+                    # Standard format (single sink)
+                    cwe_output = CWEKnowledgeOutput(**cwe_data)
+            except Exception:
+                pass
         
         # Determine function name
         if function_name is None and ast_output:
