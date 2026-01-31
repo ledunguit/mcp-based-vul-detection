@@ -247,7 +247,20 @@ Remember: You can ONLY use the tool evidence above. Do NOT analyze the code your
                 
                 validation_data = data.get("validation", {})
                 
-                def parse_check(check_data: dict) -> ValidationCheck:
+                def parse_check(check_data) -> ValidationCheck:
+                    # Handle case where model returns bool instead of dict
+                    if isinstance(check_data, bool):
+                        return ValidationCheck(
+                            present=check_data,
+                            citation="No citation",
+                            confidence="low",
+                        )
+                    if not isinstance(check_data, dict):
+                        return ValidationCheck(
+                            present=False,
+                            citation="Invalid data format",
+                            confidence="low",
+                        )
                     return ValidationCheck(
                         present=check_data.get("present", False),
                         citation=check_data.get("citation", "No citation provided"),
