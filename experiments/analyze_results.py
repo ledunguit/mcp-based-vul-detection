@@ -6,6 +6,9 @@ This script computes:
 - Hallucination detection and confidence calibration
 - Per-CWE breakdown analysis
 - Error analysis and confusion matrices
+- AUC-ROC curve analysis (Phase 1 Enhancement)
+- Tool contribution analysis with actual tool call data
+- Statistical significance tests (McNemar's test)
 """
 
 import json
@@ -15,6 +18,14 @@ from pathlib import Path
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
+
+# Optional numpy/scipy for advanced metrics
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
+    np = None
 
 
 @dataclass
@@ -34,12 +45,15 @@ class Metrics:
     accuracy: float
     avg_duration: float
     evidence_backed_rate: float = 0.0
-    # New enhanced metrics
+    # Enhanced metrics (Phase 1.1)
     avg_confidence: float = 0.0
     confidence_calibration_error: float = 0.0
     hallucination_rate: float = 0.0
     tool_coverage: float = 0.0
     per_cwe_metrics: dict = field(default_factory=dict)
+    # New Phase 1.1 metrics
+    auc_roc: float = 0.0  # Area Under ROC Curve
+    tool_contribution: dict = field(default_factory=dict)  # Per-tool impact
 
 
 @dataclass
@@ -53,6 +67,293 @@ class ErrorCase:
     reasoning: str
     evidence_count: int
     confidence: float = 0.0
+
+
+# ============================================================================
+# Phase 1.1 Enhanced Metrics Functions
+# ============================================================================
+
+def compute_auc_roc(results: list[dict]) -> tuple[float, list[tuple[float, float]]]:
+    """
+    Compute AUC-ROC using confidence scores as probabilities.
+    
+    For binary classification (VULNERABLE vs SAFE), we treat:
+    - VULNERABLE with high confidence = high probability of positive
+    - SAFE with high confidence = low probability of positive
+    
+    Returns:
+        Tuple of (auc_score, roc_curve_points)
+    """
+    # Collect scores and labels
+    y_true = []  # 1 for vulnerable, 0 for safe
+    y_scores = []  # Probability of being vulnerable
+    
+    for r in results:
+        verdict = r.get("predicted_verdict", "")
+        if verdict in ["ERROR", "NOT_ENOUGH_EVIDENCE"]:
+            continue
+        
+        ground_truth = r.get("ground_truth", False)
+        confidence = r.get("confidence", 0.5)
+        
+        y_true.append(1 if ground_truth else 0)
+        
+        # Convert verdict + confidence to probability of vulnerable
+        if verdict == "VULNERABLE":
+            y_scores.append(confidence)
+        else:  # SAFE
+            y_scores.append(1 - confidence)
+    
+    if len(y_true) < 2 or len(set(y_true)) < 2:
+        # Not enough samples or only one class
+        return 0.0, []
+    
+    # Use numpy if available for efficient computation
+    if HAS_NUMPY:
+        y_true_np = np.array(y_true)
+        y_scores_np = np.array(y_scores)
+        
+        # Sort by score descending
+        sorted_indices = np.argsort(-y_scores_np)
+        y_true_sorted = y_true_np[sorted_indices]
+        
+        # Compute ROC curve points
+        n_pos = np.sum(y_true_np)
+        n_neg = len(y_true_np) - n_pos
+        
+        tpr_points = []
+        fpr_points = []
+        tp = 0
+        fp = 0
+        
+        for label in y_true_sorted:
+            if label == 1:
+                tp += 1
+            else:
+                fp += 1
+            tpr_points.append(tp / n_pos if n_pos > 0 else 0)
+            fpr_points.append(fp / n_neg if n_neg > 0 else 0)
+        
+        # Compute AUC using trapezoidal rule
+        auc = np.trapezoid(tpr_points, fpr_points) if hasattr(np, 'trapezoid') else np.trapz(tpr_points, fpr_points)
+        roc_curve = list(zip(fpr_points, tpr_points))
+        
+        return abs(auc), roc_curve
+    else:
+        # Fallback: Simple Wilcoxon-Mann-Whitney statistic
+        n_pos = sum(y_true)
+        n_neg = len(y_true) - n_pos
+        
+        if n_pos == 0 or n_neg == 0:
+            return 0.0, []
+        
+        # Count concordant pairs (simplified AUC calculation)
+        concordant = 0
+        for i, (label_i, score_i) in enumerate(zip(y_true, y_scores)):
+            for j, (label_j, score_j) in enumerate(zip(y_true, y_scores)):
+                if label_i > label_j and score_i > score_j:
+                    concordant += 1
+                elif label_i > label_j and score_i == score_j:
+                    concordant += 0.5
+        
+        auc = concordant / (n_pos * n_neg)
+        return auc, []
+
+
+def compute_tool_contribution_enhanced(results: list[dict]) -> dict:
+    """
+    Analyze tool contribution using actual tool call data.
+    
+    For each tool, computes:
+    - Usage frequency
+    - Accuracy when tool is used vs not used
+    - Contribution to correct predictions
+    - Average impact on confidence
+    
+    Returns:
+        Dict with detailed tool contribution metrics
+    """
+    all_tools = ["ast_analyze", "static_analyze", "cwe_lookup", 
+                 "taint_analyze", "pattern_analyze", "cfg_analyze"]
+    
+    tool_stats = {tool: {
+        "used_count": 0,
+        "correct_when_used": 0,
+        "incorrect_when_used": 0,
+        "confidence_sum_when_used": 0.0,
+        "not_used_count": 0,
+        "correct_when_not_used": 0,
+    } for tool in all_tools}
+    
+    for r in results:
+        verdict = r.get("predicted_verdict", "")
+        if verdict in ["ERROR", "NOT_ENOUGH_EVIDENCE"]:
+            continue
+        
+        ground_truth = r.get("ground_truth", False)
+        is_correct = (verdict == "VULNERABLE" and ground_truth) or \
+                     (verdict == "SAFE" and not ground_truth)
+        confidence = r.get("confidence", 0.5)
+        
+        # Get tools used from result data
+        tools_used = set()
+        
+        # Check tool_calls field if available
+        if "tool_calls" in r and isinstance(r["tool_calls"], list):
+            for tc in r["tool_calls"]:
+                if isinstance(tc, dict) and "name" in tc:
+                    tools_used.add(tc["name"])
+                elif isinstance(tc, str):
+                    tools_used.add(tc)
+        
+        # Check tool_outputs field
+        if "tool_outputs" in r and isinstance(r["tool_outputs"], dict):
+            tools_used.update(r["tool_outputs"].keys())
+        
+        # Fallback: detect from reasoning
+        if not tools_used:
+            reasoning = r.get("reasoning", "").lower()
+            if "ast" in reasoning:
+                tools_used.add("ast_analyze")
+            if "static" in reasoning or "clang" in reasoning:
+                tools_used.add("static_analyze")
+            if "cwe" in reasoning:
+                tools_used.add("cwe_lookup")
+            if "taint" in reasoning:
+                tools_used.add("taint_analyze")
+            if "pattern" in reasoning:
+                tools_used.add("pattern_analyze")
+            if "cfg" in reasoning or "control flow" in reasoning:
+                tools_used.add("cfg_analyze")
+        
+        # Update stats for each tool
+        for tool in all_tools:
+            if tool in tools_used:
+                tool_stats[tool]["used_count"] += 1
+                tool_stats[tool]["confidence_sum_when_used"] += confidence
+                if is_correct:
+                    tool_stats[tool]["correct_when_used"] += 1
+                else:
+                    tool_stats[tool]["incorrect_when_used"] += 1
+            else:
+                tool_stats[tool]["not_used_count"] += 1
+                if is_correct:
+                    tool_stats[tool]["correct_when_not_used"] += 1
+    
+    # Compute derived metrics
+    contribution = {}
+    for tool, stats in tool_stats.items():
+        used = stats["used_count"]
+        not_used = stats["not_used_count"]
+        
+        accuracy_when_used = (stats["correct_when_used"] / used) if used > 0 else 0.0
+        accuracy_when_not_used = (stats["correct_when_not_used"] / not_used) if not_used > 0 else 0.0
+        avg_confidence = (stats["confidence_sum_when_used"] / used) if used > 0 else 0.0
+        
+        # Contribution score: how much does using this tool improve accuracy?
+        contribution_score = accuracy_when_used - accuracy_when_not_used
+        
+        contribution[tool] = {
+            "usage_rate": used / (used + not_used) if (used + not_used) > 0 else 0.0,
+            "accuracy_when_used": accuracy_when_used,
+            "accuracy_when_not_used": accuracy_when_not_used,
+            "contribution_score": contribution_score,
+            "avg_confidence_when_used": avg_confidence,
+            "total_used": used,
+        }
+    
+    return contribution
+
+
+def mcnemar_test(results1: list[dict], results2: list[dict]) -> dict:
+    """
+    Perform McNemar's test to compare two approaches.
+    
+    McNemar's test is appropriate for paired nominal data, comparing
+    the proportions of disagreement between two classifiers.
+    
+    Args:
+        results1: Results from first approach
+        results2: Results from second approach (must have same samples)
+    
+    Returns:
+        Dict with test statistic, p-value, and interpretation
+    """
+    # Build sample_id to result mapping
+    results1_map = {r.get("sample_id"): r for r in results1}
+    results2_map = {r.get("sample_id"): r for r in results2}
+    
+    # Find common samples
+    common_ids = set(results1_map.keys()) & set(results2_map.keys())
+    
+    if len(common_ids) < 10:
+        return {
+            "error": "Not enough common samples for McNemar's test",
+            "common_samples": len(common_ids),
+        }
+    
+    # Count disagreement table
+    # b = approach1 correct, approach2 incorrect
+    # c = approach1 incorrect, approach2 correct
+    b = 0
+    c = 0
+    
+    for sample_id in common_ids:
+        r1 = results1_map[sample_id]
+        r2 = results2_map[sample_id]
+        
+        verdict1 = r1.get("predicted_verdict", "")
+        verdict2 = r2.get("predicted_verdict", "")
+        ground_truth = r1.get("ground_truth", False)
+        
+        if verdict1 in ["ERROR", "NOT_ENOUGH_EVIDENCE"]:
+            continue
+        if verdict2 in ["ERROR", "NOT_ENOUGH_EVIDENCE"]:
+            continue
+        
+        correct1 = (verdict1 == "VULNERABLE" and ground_truth) or \
+                   (verdict1 == "SAFE" and not ground_truth)
+        correct2 = (verdict2 == "VULNERABLE" and ground_truth) or \
+                   (verdict2 == "SAFE" and not ground_truth)
+        
+        if correct1 and not correct2:
+            b += 1
+        elif not correct1 and correct2:
+            c += 1
+    
+    # McNemar's test statistic (with continuity correction)
+    if b + c == 0:
+        return {
+            "b": b,
+            "c": c,
+            "interpretation": "No disagreements between approaches",
+            "statistically_significant": False,
+        }
+    
+    chi2 = ((abs(b - c) - 1) ** 2) / (b + c)
+    
+    # Approximate p-value using chi-squared distribution with 1 df
+    # For chi2 > 3.84, p < 0.05 (statistically significant at 95% confidence)
+    p_value_approx = "< 0.05" if chi2 > 3.84 else ">= 0.05"
+    significant = chi2 > 3.84
+    
+    # Determine which approach is better
+    better = None
+    if significant:
+        if b > c:
+            better = "approach1"
+        else:
+            better = "approach2"
+    
+    return {
+        "b": b,  # approach1 correct, approach2 wrong
+        "c": c,  # approach1 wrong, approach2 correct
+        "chi2_statistic": chi2,
+        "p_value": p_value_approx,
+        "statistically_significant": significant,
+        "better_approach": better,
+        "common_samples": len(common_ids),
+    }
 
 
 def compute_confidence_calibration(results: list[dict]) -> tuple[float, dict]:
@@ -384,6 +685,10 @@ def compute_metrics(results: list[dict], approach: str) -> Metrics:
     hallucination_rate, _ = detect_hallucinations(results)
     per_cwe = compute_per_cwe_metrics(results)
     
+    # Phase 1.1: New enhanced metrics
+    auc_roc, _ = compute_auc_roc(results)
+    tool_contribution = compute_tool_contribution_enhanced(results)
+    
     return Metrics(
         approach=approach,
         total_samples=total,
@@ -403,6 +708,8 @@ def compute_metrics(results: list[dict], approach: str) -> Metrics:
         confidence_calibration_error=ece,
         hallucination_rate=hallucination_rate,
         per_cwe_metrics=per_cwe,
+        auc_roc=auc_roc,
+        tool_contribution=tool_contribution,
     )
 
 
@@ -545,6 +852,11 @@ def analyze_results(results_path: Path, output_path: Path | None = None, verbose
         print("|".join(c.center(w) for c, w in zip(row, col_widths)))
     print(separator)
     
+    # Phase 1.1: Add AUC-ROC to comparison
+    print("\n📈 AUC-ROC Scores:")
+    for approach_name, metrics in all_metrics.items():
+        print(f"  {approach_name}: {metrics.auc_roc:.3f}")
+    
     # MCP-specific metrics comparison
     if "mcp_based" in all_metrics:
         mcp = all_metrics["mcp_based"]
@@ -552,6 +864,45 @@ def analyze_results(results_path: Path, output_path: Path | None = None, verbose
         print(f"  Evidence Backing:    {mcp.evidence_backed_rate:.1%}")
         print(f"  Confidence Accuracy: {1 - mcp.confidence_calibration_error:.1%}")
         print(f"  Hallucination-Free:  {1 - mcp.hallucination_rate:.1%}")
+        print(f"  AUC-ROC:             {mcp.auc_roc:.3f}")
+        
+        # Phase 1.1: Tool contribution analysis
+        if mcp.tool_contribution:
+            print("\n🔧 Tool Contribution Analysis:")
+            sorted_tools = sorted(
+                mcp.tool_contribution.items(),
+                key=lambda x: x[1].get("contribution_score", 0),
+                reverse=True
+            )
+            for tool_name, contrib in sorted_tools:
+                if contrib.get("total_used", 0) > 0:
+                    print(f"  {tool_name}:")
+                    print(f"    Usage Rate:        {contrib['usage_rate']:.1%}")
+                    print(f"    Accuracy (used):   {contrib['accuracy_when_used']:.1%}")
+                    print(f"    Contribution:      {contrib['contribution_score']:+.2f}")
+    
+    # Phase 1.1: Statistical significance tests
+    print(f"\n{'='*70}")
+    print("STATISTICAL SIGNIFICANCE TESTS (McNemar)")
+    print("="*70)
+    
+    approaches_list = list(data["results"].keys())
+    for i, approach1 in enumerate(approaches_list):
+        for approach2 in approaches_list[i+1:]:
+            result = mcnemar_test(
+                data["results"][approach1],
+                data["results"][approach2]
+            )
+            sig_marker = "✓" if result.get("statistically_significant") else "✗"
+            better = result.get("better_approach", "")
+            better_name = approach1 if better == "approach1" else (approach2 if better == "approach2" else "N/A")
+            
+            print(f"\n{approach1} vs {approach2}:")
+            print(f"  Chi² Statistic: {result.get('chi2_statistic', 0):.3f}")
+            print(f"  p-value: {result.get('p_value', 'N/A')}")
+            print(f"  Significant: {sig_marker}")
+            if result.get("statistically_significant"):
+                print(f"  Better approach: {better_name}")
     
     # Generate report
     report = {
@@ -561,7 +912,17 @@ def analyze_results(results_path: Path, output_path: Path | None = None, verbose
         "error_analysis": all_errors,
         "hallucination_analysis": {k: v for k, v in all_hallucinations.items()},
         "confidence_calibration": all_calibration,
+        "statistical_tests": {},  # Will be populated below
     }
+    
+    # Add statistical tests to report
+    for i, approach1 in enumerate(approaches_list):
+        for approach2 in approaches_list[i+1:]:
+            test_result = mcnemar_test(
+                data["results"][approach1],
+                data["results"][approach2]
+            )
+            report["statistical_tests"][f"{approach1}_vs_{approach2}"] = test_result
     
     if output_path:
         with open(output_path, "w") as f:

@@ -1,70 +1,224 @@
 # MCP-Based Vulnerability Detection
 
-An experimental system for LLM-orchestrated vulnerability detection using the Model Context Protocol (MCP).
+An experimental system for **LLM-orchestrated vulnerability detection** using the **Model Context Protocol (MCP)**.
+
+> **Note**: This is the source code for a Master's thesis research project on applying LLM orchestration with MCP tools for automated vulnerability detection in C source code.
+
+---
+
+## Table of Contents
+
+- [MCP-Based Vulnerability Detection](#mcp-based-vulnerability-detection)
+  - [Table of Contents](#table-of-contents)
+  - [Overview](#overview)
+    - [Key Features](#key-features)
+  - [System Architecture](#system-architecture)
+  - [Module Structure](#module-structure)
+  - [MCP Tools](#mcp-tools)
+    - [Core Analysis Tools](#core-analysis-tools)
+    - [Inter-procedural Analysis (NEW)](#inter-procedural-analysis-new)
+    - [CWE Handlers (NEW)](#cwe-handlers-new)
+  - [Supported CWEs](#supported-cwes)
+  - [Quick Start](#quick-start)
+    - [1. Installation](#1-installation)
+    - [2. Configuration](#2-configuration)
+    - [3. Run Analysis](#3-run-analysis)
+  - [Experiments](#experiments)
+    - [Dataset Preparation](#dataset-preparation)
+    - [Run Experiments](#run-experiments)
+    - [Enhanced Metrics (NEW)](#enhanced-metrics-new)
+  - [Project Structure](#project-structure)
+  - [Test Coverage](#test-coverage)
+  - [Approach Comparison](#approach-comparison)
+  - [Requirements](#requirements)
+  - [Citation](#citation)
+  - [License](#license)
+
+---
 
 ## Overview
 
 This system demonstrates:
+
 - **LLM-based orchestration** using Model Context Protocol (MCP)
-- **Vulnerability detection** for C source code (Buffer Overflow family)
-- **Multi-CWE support**: CWE-120, CWE-121, CWE-122, CWE-787, CWE-125
+- **Multi-CWE vulnerability detection** for C source code
 - **Evidence-based reasoning** with tool-grounded conclusions
-- **6 MCP Tools**: AST, Static Analysis, CWE Knowledge, Taint Analysis, Pattern Matching, CFG
-- **Enhanced metrics**: Hallucination detection, Confidence calibration
+- **Ensemble judging** with multiple analysis perspectives
+- **Inter-procedural taint analysis** across function boundaries
+- **Enhanced metrics** including AUC-ROC, statistical significance testing
 - **Comparison with baselines** (LLM-only, static-only)
-- **Dual LLM provider support**: Claude API or local OpenAI-compatible endpoints
 
-## Architecture
+### Key Features
+
+| Feature | Description |
+|---------|-------------|
+| 6 MCP Analysis Tools | AST, Static Analysis, CWE Knowledge, Taint, Pattern, CFG |
+| 5 CWE Handlers | Buffer Overflow, SQL Injection, Command Injection, XSS, Path Traversal |
+| Ensemble Judging | 4 perspectives with weighted voting |
+| Inter-procedural Analysis | Cross-function taint tracking with call graph |
+| MCP Protocol | JSON-RPC 2.0 compliant tool communication |
+| Dataset Tools | SARD, NVD, Juliet dataset downloaders |
+
+---
+
+## System Architecture
 
 ```
-Source Code (C function)
-        ↓
-Orchestrator Agent (LLM)
-        ↓ MCP Tools
-┌─────────────────────────────────────────────┐
-│            MCP Tool Layer (6 Tools)         │
-├─────────────────────────────────────────────┤
-│  Core Analysis:                             │
-│    - AST Server (tree-sitter)               │
-│    - Static Analysis (Clang analyzer)       │
-│    - CWE Knowledge (MITRE rules)            │
-├─────────────────────────────────────────────┤
-│  Advanced Analysis:                         │
-│    - Taint Analysis (source → sink flow)    │
-│    - Pattern Matching (regex + Semgrep)     │
-│    - CFG Analysis (control flow graph)      │
-└─────────────────────────────────────────────┘
-        ↓
-Evidence Aggregation
-        ↓
-Judge Agent (LLM)
-  - Hallucination detection
-  - Confidence calibration
-  - Evidence validation
-        ↓
-Final Verdict + Evidence Trail
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                        MCP-VUL SYSTEM ARCHITECTURE                              │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│                           Source Code (C function)                              │
+│                                    │                                            │
+│                                    ▼                                            │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │                     ORCHESTRATOR AGENT (LLM)                            │   │
+│  │  • Few-shot prompting                                                   │   │
+│  │  • Tool selection and invocation                                        │   │
+│  │  • Evidence aggregation                                                 │   │
+│  └─────────────────────────────────────────────────────────────────────────┘   │
+│                                    │                                            │
+│                           ┌────────┴────────┐                                   │
+│                           ▼                 ▼                                   │
+│  ┌──────────────────────────────┐  ┌──────────────────────────────┐            │
+│  │    MCP PROTOCOL LAYER        │  │    MCP PROTOCOL LAYER        │            │
+│  │  • JSON-RPC 2.0              │  │  • Tool Registry             │            │
+│  │  • MCPServer / MCPClient     │  │  • Call History Tracking     │            │
+│  └──────────────────────────────┘  └──────────────────────────────┘            │
+│                           │                 │                                   │
+│                           ▼                 ▼                                   │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │                        MCP TOOL LAYER (6 Tools)                         │   │
+│  ├─────────────────────────────────────────────────────────────────────────┤   │
+│  │  Core Analysis:                    │  Advanced Analysis:                │   │
+│  │    • AST Server (tree-sitter)      │    • Taint Analysis                │   │
+│  │    • Static Analysis (Clang)       │    • Pattern Matching              │   │
+│  │    • CWE Knowledge Base            │    • CFG Analysis                  │   │
+│  ├─────────────────────────────────────────────────────────────────────────┤   │
+│  │  NEW: Inter-procedural Analysis:   │  NEW: CWE Handlers:                │   │
+│  │    • Function Summary              │    • Buffer Overflow (120,121,122) │   │
+│  │    • Call Graph Builder            │    • SQL Injection (89)            │   │
+│  │    • Cross-function Taint          │    • Command Injection (78)        │   │
+│  │                                    │    • XSS (79), Path Traversal (22) │   │
+│  └─────────────────────────────────────────────────────────────────────────┘   │
+│                                    │                                            │
+│                                    ▼                                            │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │                      JUDGE LAYER (Enhanced)                             │   │
+│  ├─────────────────────────────────────────────────────────────────────────┤   │
+│  │  Standard Judge:           │  NEW: Ensemble Judge:                      │   │
+│  │    • Hallucination check   │    • Security Expert perspective           │   │
+│  │    • Evidence validation   │    • Code Quality perspective              │   │
+│  │    • Confidence scoring    │    • False Positive Filter perspective     │   │
+│  │                            │    • Conservative perspective              │   │
+│  │                            │    • Weighted voting aggregation           │   │
+│  └─────────────────────────────────────────────────────────────────────────┘   │
+│                                    │                                            │
+│                                    ▼                                            │
+│                          Final Verdict + Evidence Trail                         │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Module Structure
+
+```
+src/
+├── config.py                      # Configuration (API keys, LLM provider)
+├── schemas.py                     # Pydantic data models
+├── llm_client.py                  # Unified LLM client (Claude + Local)
+├── pipeline.py                    # Main analysis pipeline
+│
+├── mcp_protocol/                  # NEW: MCP Protocol Implementation
+│   ├── base_server.py             # MCPServer ABC, MCPRequest/Response
+│   ├── client.py                  # MCPClient with call history
+│   └── registry.py                # ToolRegistry for tool management
+│
+├── mcp_servers/                   # MCP Tool Servers
+│   ├── ast_server.py              # Tree-sitter C parser
+│   ├── static_analysis_server.py  # Clang Static Analyzer
+│   ├── cwe_knowledge_server.py    # CWE knowledge base (multi-CWE)
+│   ├── taint_server.py            # Intra-procedural taint analysis
+│   ├── pattern_server.py          # Pattern matching (12+ patterns)
+│   ├── cfg_server.py              # Control flow graph analysis
+│   │
+│   ├── function_summary.py        # NEW: Function summaries for taint
+│   ├── call_graph.py              # NEW: Call graph builder
+│   ├── interprocedural_taint.py   # NEW: Cross-function taint analysis
+│   │
+│   └── cwe_handlers/              # NEW: Multi-CWE Support
+│       ├── base.py                # CWEHandler ABC, CWERegistry
+│       ├── buffer_overflow.py     # CWE-120, 121, 122, 125, 787
+│       ├── sql_injection.py       # CWE-89
+│       ├── command_injection.py   # CWE-78
+│       ├── xss.py                 # CWE-79
+│       └── path_traversal.py      # CWE-22, 23, 36
+│
+├── agents/                        # LLM Agents
+│   ├── orchestrator.py            # Tool orchestration (few-shot)
+│   ├── judge.py                   # Evidence validation
+│   └── ensemble_judge.py          # NEW: Multi-perspective judging
+│
+├── metrics/                       # NEW: Enhanced Metrics
+│   └── explanation_scorer.py      # LLM explanation quality scoring
+│
+└── baselines/                     # Comparison Baselines
+    ├── static_only.py
+    └── llm_only.py
+```
+
+---
 
 ## MCP Tools
+
+### Core Analysis Tools
 
 | Tool | Description | Output |
 |------|-------------|--------|
 | **ast_analyze** | Parse C code with tree-sitter | Function structure, variables, risky calls |
 | **static_analyze** | Run Clang Static Analyzer | Security warnings, bug reports |
 | **cwe_lookup** | Query CWE knowledge base | Safety checks, patterns, mitigations |
-| **taint_analyze** | Track data flow from sources to sinks | Taint paths, sanitization status |
-| **pattern_analyze** | Match known vulnerability patterns | Pattern matches with severity |
-| **cfg_analyze** | Build control flow graph | Nodes, edges, paths to sinks, complexity |
+| **taint_analyze** | Track data flow (source → sink) | Taint paths, sanitization status |
+| **pattern_analyze** | Match vulnerability patterns | Pattern matches with severity |
+| **cfg_analyze** | Build control flow graph | Nodes, edges, paths to sinks |
+
+### Inter-procedural Analysis (NEW)
+
+| Component | Description |
+|-----------|-------------|
+| **FunctionSummary** | Summarizes function behavior for taint propagation |
+| **CallGraph** | Builds caller/callee relationships across functions |
+| **InterproceduralTaintAnalyzer** | Tracks taint across function boundaries |
+
+### CWE Handlers (NEW)
+
+| Handler | CWEs | Category |
+|---------|------|----------|
+| BufferOverflowHandler | 120, 121, 122, 125, 787 | Memory Safety |
+| SQLInjectionHandler | 89 | Injection |
+| CommandInjectionHandler | 78 | Injection |
+| XSSHandler | 79 | Injection |
+| PathTraversalHandler | 22, 23, 36 | Traversal |
+
+---
 
 ## Supported CWEs
 
-| CWE ID | Name | Description |
-|--------|------|-------------|
-| CWE-120 | Buffer Copy without Size Check | Classic buffer overflow |
-| CWE-121 | Stack-based Buffer Overflow | Overflow on stack memory |
-| CWE-122 | Heap-based Buffer Overflow | Overflow on heap memory |
-| CWE-787 | Out-of-bounds Write | Write outside allocated bounds |
-| CWE-125 | Out-of-bounds Read | Read outside allocated bounds |
+| CWE ID | Name | Handler |
+|--------|------|---------|
+| CWE-120 | Buffer Copy without Size Check | BufferOverflowHandler |
+| CWE-121 | Stack-based Buffer Overflow | BufferOverflowHandler |
+| CWE-122 | Heap-based Buffer Overflow | BufferOverflowHandler |
+| CWE-125 | Out-of-bounds Read | BufferOverflowHandler |
+| CWE-787 | Out-of-bounds Write | BufferOverflowHandler |
+| CWE-89 | SQL Injection | SQLInjectionHandler |
+| CWE-78 | OS Command Injection | CommandInjectionHandler |
+| CWE-79 | Cross-site Scripting (XSS) | XSSHandler |
+| CWE-22 | Path Traversal | PathTraversalHandler |
+
+---
 
 ## Quick Start
 
@@ -120,331 +274,145 @@ echo 'void bad(char *s) { char buf[32]; strcpy(buf, s); }' | python -m src.pipel
 LLM_PROVIDER=local python -m src.pipeline code.c -v
 ```
 
+---
+
 ## Experiments
 
-### Complete Experiment Flow
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        EXPERIMENT WORKFLOW                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌─────────────┐     ┌─────────────┐     ┌─────────────┐                   │
-│  │   STEP 1    │     │   STEP 2    │     │   STEP 3    │                   │
-│  │   Setup     │ ──▶ │  Dataset    │ ──▶ │    Run      │                   │
-│  │Environment  │     │ Preparation │     │ Experiments │                   │
-│  └─────────────┘     └─────────────┘     └─────────────┘                   │
-│        │                   │                   │                            │
-│        ▼                   ▼                   ▼                            │
-│  • Install deps      • Download CWE KB   • static_only                     │
-│  • Configure .env    • Generate samples  • llm_only                        │
-│  • Verify clang      • Or extract Juliet • mcp_based                       │
-│                                                                             │
-│                      ┌─────────────┐     ┌─────────────┐                   │
-│                      │   STEP 4    │     │   STEP 5    │                   │
-│                      │  Analyze    │ ──▶ │   Report    │                   │
-│                      │  Results    │     │  & Compare  │                   │
-│                      └─────────────┘     └─────────────┘                   │
-│                            │                   │                            │
-│                            ▼                   ▼                            │
-│                      • Compute metrics   • Precision/Recall/F1             │
-│                      • Confusion matrix  • Per-CWE breakdown               │
-│                      • Error analysis    • Approach comparison             │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-### Step 1: Environment Setup
+### Dataset Preparation
 
 ```bash
-# 1.1 Create and activate virtual environment
-pyenv virtualenv 3.12 mcp-vul
-pyenv local mcp-vul
+# Option A: Hand-crafted samples (quick)
+python experiments/prepare_dataset.py --sample-only --output data/juliet_samples/dataset.json
 
-# 1.2 Install dependencies
-pip install -e ".[dev]"
-
-# 1.3 Install clang (macOS)
-brew install llvm
-
-# 1.4 Configure environment
-cp .env.example .env
-# Edit .env: set LLM_PROVIDER and API keys
-
-# 1.5 Verify installation
-python -c "from src.mcp_servers import ast_analyze_tool; print('OK')"
-pytest tests/ -v --tb=short
+# Option B: Download datasets for multi-CWE testing
+python experiments/download_datasets.py --dataset all --cwe 120,89,78,79,22 --output experiments/datasets/
 ```
 
----
+### Run Experiments
 
-### Step 2: Dataset Preparation
-
-**Option A: Hand-crafted Samples (Quick Start)**
 ```bash
-# Generate 30 multi-CWE samples (15 vulnerable, 15 safe)
-python experiments/prepare_dataset.py \
-  --sample-only \
-  --output data/juliet_samples/dataset.json
-
-# Verify dataset
-python -c "import json; d=json.load(open('data/juliet_samples/dataset.json')); print(f'Samples: {len(d['samples'])}')"
-```
-
-**Option B: Juliet Test Suite (Production)**
-```bash
-# 2.1 Download Juliet (one-time, ~500MB)
-mkdir -p data/juliet_raw && cd data/juliet_raw
-curl -L -o juliet.zip "https://samate.nist.gov/SARD/downloads/test-suites/2017-10-01-juliet-test-suite-for-c-cplusplus-v1-3.zip"
-unzip -q juliet.zip && cd ../..
-
-# 2.2 Extract balanced dataset (CWE-121: Stack Buffer Overflow)
-python experiments/extract_juliet.py \
-  --cwe CWE121 \
-  --count 100 \
-  --output data/juliet_samples/juliet_cwe121.json
-
-# 2.3 Or extract multiple CWEs
-python experiments/extract_juliet.py \
-  --cwe CWE122 \
-  --count 50 \
-  --output data/juliet_samples/juliet_cwe122.json
-```
-
-**Option C: Download MITRE CWE Knowledge (Optional)**
-```bash
-# Download official CWE database
-mkdir -p data/cwe_mitre && cd data/cwe_mitre
-curl -L -o cwec_latest.xml.zip "https://cwe.mitre.org/data/xml/cwec_latest.xml.zip"
-unzip -o cwec_latest.xml.zip && cd ../..
-
-# Parse buffer overflow CWEs
-python experiments/parse_cwe_xml.py \
-  --input data/cwe_mitre/cwec_v4.19.xml \
-  --output data/cwe_knowledge_mitre.json
-```
-
----
-
-### Step 3: Run Experiments
-
-**3.1 Run All Approaches (Recommended)**
-```bash
+# Run all approaches
 python experiments/run_experiment.py \
   --dataset data/juliet_samples/dataset.json \
   --approaches static_only llm_only mcp_based \
   --output results/
-```
 
-**3.2 Run Single Approach**
-```bash
-# Static analysis only (fastest, no LLM)
-python experiments/run_experiment.py \
-  --dataset data/juliet_samples/dataset.json \
-  --approaches static_only \
-  --output results/
-
-# LLM only (requires API)
-python experiments/run_experiment.py \
-  --dataset data/juliet_samples/dataset.json \
-  --approaches llm_only \
-  --output results/
-
-# MCP-based (full pipeline)
-python experiments/run_experiment.py \
-  --dataset data/juliet_samples/dataset.json \
-  --approaches mcp_based \
-  --output results/
-```
-
-**3.3 With Local LLM (LM Studio, Ollama, etc.)**
-```bash
-# Start local LLM server first (e.g., LM Studio on port 1234)
-LLM_PROVIDER=local \
-LOCAL_LLM_BASE_URL=http://127.0.0.1:1234/v1 \
-LOCAL_LLM_MODEL=qwen2.5-coder-32b \
-python experiments/run_experiment.py \
-  --dataset data/juliet_samples/dataset.json \
-  --approaches mcp_based \
-  --output results/
-```
-
-**3.4 Limit Samples (for Testing)**
-```bash
-# Run on first 10 samples only
-python experiments/run_experiment.py \
-  --dataset data/juliet_samples/dataset.json \
-  --approaches mcp_based \
-  --limit 10 \
-  --output results/
-```
-
----
-
-### Step 4: Analyze Results
-
-```bash
-# Analyze combined results
-python experiments/analyze_results.py \
-  --input results/combined_*.json
-
-# Analyze specific result file
-python experiments/analyze_results.py \
-  --input results/mcp_based_20260119_120000.json
-```
-
-**Output Metrics:**
-| Metric | Description |
-|--------|-------------|
-| Precision | TP / (TP + FP) - How many detected vulns are real |
-| Recall | TP / (TP + FN) - How many real vulns are detected |
-| F1 Score | Harmonic mean of Precision and Recall |
-| Accuracy | (TP + TN) / Total |
-| Hallucination Rate | % of claims not supported by evidence |
-| Confidence Calibration | Expected Calibration Error (ECE) |
-
----
-
-### Step 5: Compare Approaches
-
-**Expected Output:**
-```
-======================================================================
-COMPARISON SUMMARY
-======================================================================
------------+-------------+----------+-----------
-   Metric  | Static-only | LLM-only | MCP-based 
------------+-------------+----------+-----------
- Precision |    0.XX     |   0.XX   |   0.XX    
-   Recall  |    0.XX     |   0.XX   |   0.XX    
-  F1 Score |    0.XX     |   0.XX   |   0.XX    
-  Accuracy |    0.XX     |   0.XX   |   0.XX    
------------+-------------+----------+-----------
-
-Per-CWE Breakdown:
-  CWE-120: Precision=X.XX, Recall=X.XX, F1=X.XX
-  CWE-121: Precision=X.XX, Recall=X.XX, F1=X.XX
-  CWE-122: Precision=X.XX, Recall=X.XX, F1=X.XX
-
-Confusion Matrix (mcp_based):
-                Predicted
-                VULN    SAFE
-Actual  VULN      TP      FN
-        SAFE      FP      TN
-```
-
----
-
-### Quick Commands Reference
-
-```bash
-# Full experiment (all steps)
-python experiments/prepare_dataset.py --sample-only --output data/juliet_samples/dataset.json && \
-python experiments/run_experiment.py --dataset data/juliet_samples/dataset.json --approaches static_only llm_only mcp_based --output results/ && \
+# Analyze results
 python experiments/analyze_results.py --input results/combined_*.json
-
-# Quick test (10 samples, MCP only)
-python experiments/run_experiment.py --dataset data/juliet_samples/dataset.json --approaches mcp_based --limit 10 --output results/
-
-# Local LLM full run
-LLM_PROVIDER=local python experiments/run_experiment.py --dataset data/juliet_samples/dataset.json --approaches mcp_based --output results/
 ```
+
+### Enhanced Metrics (NEW)
+
+The analyzer now includes:
+- **AUC-ROC** calculation from confidence scores
+- **Tool Contribution Analysis** showing each tool's impact
+- **McNemar's Test** for statistical significance between approaches
+- **Explanation Quality Scoring** for LLM outputs
+
+---
 
 ## Project Structure
 
 ```
 MCP-Vul/
 ├── src/
-│   ├── config.py                 # Configuration (API keys, LLM provider)
-│   ├── schemas.py                # Pydantic data models
-│   ├── llm_client.py             # Unified LLM client (Claude + Local)
-│   ├── pipeline.py               # Main analysis pipeline
-│   ├── mcp_servers/              # MCP tool servers
-│   │   ├── ast_server.py         # Tree-sitter C parser
-│   │   ├── static_analysis_server.py  # Clang analyzer
-│   │   ├── cwe_knowledge_server.py    # CWE knowledge base (multi-CWE)
-│   │   ├── taint_server.py       # Taint analysis (source → sink)
-│   │   ├── pattern_server.py     # Pattern matching (12+ patterns)
-│   │   └── cfg_server.py         # Control flow graph analysis
-│   ├── agents/                   # LLM agents
-│   │   ├── orchestrator.py       # Tool orchestration (few-shot, confidence)
-│   │   └── judge.py              # Evidence validation (hallucination check)
-│   └── baselines/                # Comparison baselines
-│       ├── static_only.py
-│       └── llm_only.py
+│   ├── config.py                 # Configuration
+│   ├── schemas.py                # Data models
+│   ├── llm_client.py             # LLM client
+│   ├── pipeline.py               # Main pipeline
+│   ├── mcp_protocol/             # NEW: MCP Protocol
+│   │   ├── base_server.py
+│   │   ├── client.py
+│   │   └── registry.py
+│   ├── mcp_servers/              # Tool servers
+│   │   ├── ast_server.py
+│   │   ├── static_analysis_server.py
+│   │   ├── cwe_knowledge_server.py
+│   │   ├── taint_server.py
+│   │   ├── pattern_server.py
+│   │   ├── cfg_server.py
+│   │   ├── function_summary.py   # NEW
+│   │   ├── call_graph.py         # NEW
+│   │   ├── interprocedural_taint.py  # NEW
+│   │   └── cwe_handlers/         # NEW: Multi-CWE
+│   ├── agents/
+│   │   ├── orchestrator.py
+│   │   ├── judge.py
+│   │   └── ensemble_judge.py     # NEW
+│   ├── metrics/                  # NEW
+│   │   └── explanation_scorer.py
+│   └── baselines/
 ├── experiments/
-│   ├── prepare_dataset.py        # Sample dataset generator (30 samples)
-│   ├── extract_juliet.py         # Juliet dataset extractor (multi-CWE)
-│   ├── run_experiment.py         # Experiment runner
-│   └── analyze_results.py        # Enhanced metrics calculator
+│   ├── prepare_dataset.py
+│   ├── extract_juliet.py
+│   ├── download_datasets.py      # NEW
+│   ├── run_experiment.py
+│   └── analyze_results.py        # Enhanced
 ├── data/
-│   ├── cwe_knowledge.json        # CWE knowledge base
-│   ├── cwe_knowledge_mitre.json  # MITRE CWE data
-│   └── juliet_samples/           # Test datasets
-├── results/                      # Experiment outputs
-└── tests/                        # Unit tests (38 tests)
+│   ├── cwe_knowledge.json
+│   └── juliet_samples/
+├── results/
+└── tests/                        # 112 tests
 ```
 
-## Approach Comparison
+---
 
-| Approach | Description | Pros | Cons |
-|----------|-------------|------|------|
-| **Static-only** | Clang analyzer only | Fast, deterministic | Misses context, low recall |
-| **LLM-only** | Direct LLM analysis | Good recall | No evidence trail, may hallucinate |
-| **MCP-based** | Orchestrator + Judge with 6 tools | Evidence-backed, verifiable, multi-tool | Slower, API costs |
+## Test Coverage
 
-## Enhanced Features
-
-### Few-shot Examples
-The Orchestrator uses few-shot examples for:
-- VULNERABLE detection with evidence
-- SAFE code verification
-- NOT_ENOUGH_EVIDENCE handling
-
-### Confidence Scoring
-```
-0.9-1.0: Very high - Multiple tools confirm
-0.7-0.9: High - Strong evidence from 2+ tools
-0.5-0.7: Medium - Single tool or weak evidence
-0.3-0.5: Low - Indirect evidence only
-0.0-0.3: Very low - Speculation
-```
-
-### Hallucination Detection
-Judge validates:
-- Claims match tool outputs
-- No fabricated evidence
-- Confidence calibration
-
-## Key Files
-
-- **Orchestrator Prompt**: `src/agents/orchestrator.py`
-- **Judge Criteria**: `src/agents/judge.py`
-- **CWE Knowledge**: `src/mcp_servers/cwe_knowledge_server.py`
-- **Risky Functions**: `src/config.py` (RISKY_FUNCTIONS)
-- **Taint Rules**: `src/mcp_servers/taint_server.py`
-- **Vulnerability Patterns**: `src/mcp_servers/pattern_server.py`
-
-## Requirements
-
-- Python 3.11+
-- clang (for static analysis)
-- Anthropic API key OR local LLM endpoint
-
-## Running Tests
+| Test File | Tests | Coverage |
+|-----------|-------|----------|
+| test_enhanced_metrics.py | 10 | AUC-ROC, Tool Contribution, McNemar |
+| test_mcp_protocol.py | 20 | MCPServer, Client, Registry |
+| test_interprocedural_taint.py | 18 | Function Summary, Call Graph, Taint |
+| test_ensemble_judge.py | 17 | Perspectives, Voting, Aggregation |
+| test_cwe_handlers.py | 29 | All CWE Handlers |
+| test_dataset_download.py | 18 | SARD, NVD, Juliet Downloaders |
+| (other tests) | ~10 | AST, Static, CWE Server |
+| **Total** | **112+** | |
 
 ```bash
 # Run all tests
 pytest tests/ -v
 
-# Run specific test file
-pytest tests/test_new_servers.py -v
-
 # Run with coverage
 pytest tests/ --cov=src --cov-report=html
 ```
+
+---
+
+## Approach Comparison
+
+| Approach | Description | Pros | Cons |
+|----------|-------------|------|------|
+| **Static-only** | Clang analyzer only | Fast, deterministic | Low recall, misses context |
+| **LLM-only** | Direct LLM analysis | Good recall | May hallucinate, no evidence |
+| **MCP-based** | Orchestrator + Judge + 6 tools | Evidence-backed, verifiable | Slower, API costs |
+
+---
+
+## Requirements
+
+- Python 3.11+
+- clang (for static analysis)
+- tree-sitter (for AST parsing)
+- Anthropic API key OR local LLM endpoint
+
+---
+
+## Citation
+
+If you use this code in your research, please cite:
+
+```bibtex
+@mastersthesis{mcpvul2026,
+  title={LLM-Orchestrated Vulnerability Detection using Model Context Protocol},
+  author={Le Dang Dung},
+  year={2026},
+  school={Ho Chi Minh City National University - University Of Information Technology }
+}
+```
+
+---
 
 ## License
 
