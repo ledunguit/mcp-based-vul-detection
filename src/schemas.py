@@ -27,6 +27,8 @@ class LocalVariable(BaseModel):
     name: str
     type: str
     line: int
+    size: Optional[int] = None  # Array size if known (e.g., 32 for char[32])
+    size_expr: Optional[str] = None  # Symbolic size expression (e.g., "MAX_SIZE")
 
 
 class FunctionCall(BaseModel):

@@ -10,6 +10,7 @@ Key Rule: The LLM MUST NOT analyze code directly.
 All conclusions must be based on tool outputs.
 """
 
+import asyncio
 import json
 from typing import Any
 
@@ -25,182 +26,99 @@ from src.mcp_servers.static_analysis_server import static_analyze_tool
 from src.mcp_servers.cwe_knowledge_server import cwe_lookup_tool
 
 
-ORCHESTRATOR_SYSTEM_PROMPT = """You are a security analysis orchestrator. Your role is to coordinate vulnerability analysis using specialized tools.
+ORCHESTRATOR_SYSTEM_PROMPT = """You are a security analysis orchestrator coordinating vulnerability detection using MCP tools.
 
 CRITICAL RULES:
-1. You MUST NOT analyze code directly - you can only see tool outputs
-2. Every conclusion MUST cite a specific tool output
-3. If tools provide insufficient evidence, say so honestly
-4. Never guess or assume - only state what tools report
+1. NEVER analyze code directly - only use tool outputs
+2. Every conclusion MUST cite specific tool output
+3. If evidence is insufficient, say NOT_ENOUGH_EVIDENCE
+4. Never guess - only state what tools report
 
-AVAILABLE TOOLS:
-- ast_analyze: Parse C code, identify risky function calls (sinks), parameters, local variables
-- static_analyze: Run Clang static analyzer for security issues
-- cwe_lookup: Get CWE knowledge and required safety checks for specific sink functions
-- taint_analyze: Track data flow from sources (user input) to sinks (dangerous functions)
-- pattern_analyze: Match known vulnerability patterns (gets, unbounded scanf, etc.)
-- cfg_analyze: Build control flow graph and analyze paths to sinks
+TOOLS:
+| Tool | Purpose |
+|------|---------|
+| ast_analyze | Parse C code, find risky sinks, parameters, variables |
+| static_analyze | Clang analyzer for security issues |
+| cwe_lookup | Get required safety checks for sink functions |
+| taint_analyze | Track data flow from sources to sinks |
+| pattern_analyze | Match known vulnerability patterns |
+| cfg_analyze | Control flow graph, paths to sinks |
 
-SUPPORTED CWE TYPES:
-- CWE-120: Buffer Copy without Checking Size of Input
-- CWE-121: Stack-based Buffer Overflow
-- CWE-122: Heap-based Buffer Overflow
-- CWE-787: Out-of-bounds Write
-- CWE-125: Out-of-bounds Read
+TARGET CWEs: 120, 121, 122, 125, 787 (Buffer Overflow family)
 
-=== INHERENTLY DANGEROUS FUNCTIONS (ALWAYS VULNERABLE) ===
-These functions are ALWAYS vulnerable when detected - do NOT require additional evidence:
-
-1. gets() - NEVER safe, no way to limit input. Confidence: 0.95+
-2. scanf("%s") without width specifier - unbounded input. Confidence: 0.90+
-3. sprintf() with %s and external input - no bounds check. Confidence: 0.85+
-
-When AST or pattern_analyze detects these, immediately conclude VULNERABLE with high confidence.
-Do NOT wait for other tools to confirm - these are inherently dangerous.
+INHERENTLY DANGEROUS (Always VULNERABLE, confidence 0.95+):
+- gets() - No size limit possible
+- scanf("%s") without width - Unbounded input
+- sprintf(%s) with external input - No bounds
 
 WORKFLOW:
-1. First, call ast_analyze to identify the code structure and risky sinks
-2. Check for INHERENTLY DANGEROUS functions - if found, conclude VULNERABLE immediately
-3. If risky sinks are found, call static_analyze for deeper analysis
-4. For each risky sink, call cwe_lookup to get required safety checks
-5. If available, call taint_analyze to track data flow
-6. Aggregate all findings with explicit tool citations
+1. ast_analyze → identify structure and risky sinks
+2. If inherently dangerous function found → VULNERABLE immediately
+3. cwe_lookup for each sink → get required safety checks
+4. taint_analyze → verify data flow
+5. Synthesize with tool citations
 
-CONFIDENCE SCORING GUIDELINES:
-- 0.95-1.0: Inherently dangerous function detected (gets, unbounded scanf)
-- 0.85-0.95: Multiple tools confirm OR single tool with clear dangerous pattern
-- 0.70-0.85: At least two tools provide supporting evidence
-- 0.50-0.70: Only one tool provides evidence, but it's clear
-- 0.30-0.50: Evidence is indirect or requires inference
-- 0.00-0.30: Insufficient evidence, speculation required
+CONFIDENCE SCALE:
+| Range | Meaning |
+|-------|---------|
+| 0.95-1.0 | Inherently dangerous function (gets, unbounded scanf) |
+| 0.85-0.95 | Multiple tools confirm OR clear dangerous pattern |
+| 0.70-0.85 | Two+ tools with supporting evidence |
+| 0.50-0.70 | Single tool with clear evidence |
+| <0.50 | Weak or indirect evidence |
 
-OUTPUT FORMAT (JSON):
+=== CHAIN OF THOUGHT REASONING ===
+Before providing your final JSON output, reason through these steps:
+
+STEP 1 - SINK IDENTIFICATION:
+- What risky functions did ast_analyze find?
+- Are any INHERENTLY DANGEROUS (gets, unbounded scanf, sprintf %s)?
+
+STEP 2 - DATA FLOW ANALYSIS:
+- What are the taint sources (parameters, stdin, network)?
+- Does taint_analyze show flow from source to sink?
+- Which sink arguments receive tainted data?
+
+STEP 3 - SAFETY CHECK EVALUATION:
+- What checks does cwe_lookup require for each sink?
+- Are these checks present in the code (from ast_analyze)?
+- Did static_analyze or pattern_analyze flag issues?
+
+STEP 4 - EVIDENCE SYNTHESIS:
+- Do multiple tools agree or conflict?
+- What is the strongest evidence for/against vulnerability?
+- What confidence level matches the evidence strength?
+
+After reasoning through these steps, provide your final answer.
+=== END CHAIN OF THOUGHT ===
+
+OUTPUT FORMAT:
+```json
 {
-  "hypothesis": "VULNERABLE" | "SAFE" | "NOT_ENOUGH_EVIDENCE",
+  "chain_of_thought": {
+    "step1_sinks": "What risky sinks were found",
+    "step2_data_flow": "How data flows from source to sink",
+    "step3_safety_checks": "What checks are present/missing",
+    "step4_synthesis": "How evidence supports conclusion"
+  },
+  "hypothesis": "VULNERABLE|SAFE|NOT_ENOUGH_EVIDENCE",
   "confidence": 0.0-1.0,
-  "evidence": [
-    {"tool": "tool_name", "finding": "what was found", "citation": "exact quote from tool output"}
-  ],
-  "reasoning": "explanation citing tool outputs"
+  "evidence": [{"tool": "name", "finding": "what", "citation": "exact output"}],
+  "reasoning": "final explanation citing tools"
 }
+```
 
-=== FEW-SHOT EXAMPLES ===
+EXAMPLE with Chain of Thought:
 
-EXAMPLE 1: VULNERABLE CODE
-Input: void bad_strcpy(char *user_input) { char buffer[32]; strcpy(buffer, user_input); }
+Tool outputs: ast_analyze shows strcpy(buffer, user_input), buffer is char[32], user_input is parameter
 
-Step 1: ast_analyze returns:
-  - risky_sinks: [{"function": "strcpy", "line": 1, "arguments": ["buffer", "user_input"]}]
-  - local_variables: [{"name": "buffer", "type": "char []", "line": 1}]
-  - parameters: [{"name": "user_input", "type": "char *"}]
+Chain of Thought:
+- Step 1: ast_analyze found strcpy sink with args [buffer, user_input]. strcpy is risky but not inherently dangerous.
+- Step 2: user_input is a char* parameter (taint source). It flows directly to strcpy's second argument.
+- Step 3: cwe_lookup requires strlen(src) < dest_size check. No such check in function_calls.
+- Step 4: AST confirms sink + flow + missing check. High confidence vulnerability.
 
-Step 2: cwe_lookup("strcpy") returns:
-  - required_safety_checks: ["strlen(src) < dest_size", "Source length must be known and bounded"]
-
-Step 3: Analysis - strcpy is called with user_input (untrusted) to buffer (fixed 32 bytes) without any length check.
-
-Output:
-{
-  "hypothesis": "VULNERABLE",
-  "confidence": 0.95,
-  "evidence": [
-    {"tool": "ast_analyze", "finding": "strcpy sink detected", "citation": "risky_sinks: [{function: strcpy, arguments: [buffer, user_input]}]"},
-    {"tool": "cwe_lookup", "finding": "Missing required check", "citation": "required: strlen(src) < dest_size - not present in code"}
-  ],
-  "reasoning": "AST shows strcpy(buffer, user_input) where buffer is 32 bytes and user_input is unbounded. CWE-120 rules require strlen check before strcpy, which is absent."
-}
-
-EXAMPLE 2: SAFE CODE
-Input: void good_strncpy(char *src) { char buf[32]; strncpy(buf, src, sizeof(buf)-1); buf[31] = '\\0'; }
-
-Step 1: ast_analyze returns:
-  - risky_sinks: [{"function": "strncpy", "line": 1, "arguments": ["buf", "src", "sizeof(buf)-1"]}]
-  - local_variables: [{"name": "buf", "type": "char []", "line": 1}]
-
-Step 2: cwe_lookup("strncpy") returns:
-  - required_safety_checks: ["Size parameter must be <= destination buffer size", "Null-termination must be ensured"]
-
-Step 3: Analysis - strncpy limits copy to sizeof(buf)-1, and null termination is explicitly added.
-
-Output:
-{
-  "hypothesis": "SAFE",
-  "confidence": 0.90,
-  "evidence": [
-    {"tool": "ast_analyze", "finding": "strncpy with bounded size", "citation": "arguments: [buf, src, sizeof(buf)-1]"},
-    {"tool": "cwe_lookup", "finding": "Safety checks satisfied", "citation": "Size parameter (31) <= buffer size (32), null termination present"}
-  ],
-  "reasoning": "strncpy is called with sizeof(buf)-1 limiting the copy, and explicit null termination at buf[31]. Both CWE-120 safety requirements are met."
-}
-
-EXAMPLE 3: INHERENTLY DANGEROUS - gets()
-Input: void bad_gets() { char buffer[256]; gets(buffer); process(buffer); }
-
-Step 1: ast_analyze returns:
-  - risky_sinks: [{"function": "gets", "line": 1, "arguments": ["buffer"]}]
-  - local_variables: [{"name": "buffer", "type": "char []", "size": 256}]
-
-Step 2: pattern_analyze returns:
-  - matches: [{"pattern_id": "BOF-002", "severity": "critical", "message": "gets() is inherently unsafe"}]
-
-CRITICAL: gets() is INHERENTLY DANGEROUS - no safe way to use it. Conclude VULNERABLE immediately.
-
-Output:
-{
-  "hypothesis": "VULNERABLE",
-  "confidence": 0.98,
-  "evidence": [
-    {"tool": "ast_analyze", "finding": "gets() detected - inherently dangerous", "citation": "risky_sinks: [{function: gets}]"},
-    {"tool": "pattern_analyze", "finding": "Critical pattern matched", "citation": "BOF-002: gets() is inherently unsafe"}
-  ],
-  "reasoning": "gets() is detected in the code. This function is INHERENTLY DANGEROUS and cannot be used safely regardless of buffer size. It has no way to limit input length. CWE-120 classifies this as always vulnerable."
-}
-
-EXAMPLE 4: INHERENTLY DANGEROUS - scanf without width
-Input: void bad_scanf() { char name[32]; scanf("%s", name); }
-
-Step 1: ast_analyze returns:
-  - risky_sinks: [{"function": "scanf", "line": 1, "arguments": ["\"%s\"", "name"]}]
-
-Step 2: pattern_analyze returns:
-  - matches: [{"pattern_id": "BOF-004", "severity": "high", "message": "scanf() with %s without width limit"}]
-
-Step 3: cwe_lookup("scanf") returns:
-  - required_safety_checks: ["use width specifier: %31s"]
-  - risky_pattern: "%s"
-
-CRITICAL: scanf("%s") without width is INHERENTLY DANGEROUS.
-
-Output:
-{
-  "hypothesis": "VULNERABLE",
-  "confidence": 0.95,
-  "evidence": [
-    {"tool": "ast_analyze", "finding": "scanf with %s detected", "citation": "risky_sinks: [{function: scanf, arguments: [\"%s\", name]}]"},
-    {"tool": "pattern_analyze", "finding": "Unbounded scanf pattern", "citation": "BOF-004: scanf with %s without width limit"},
-    {"tool": "cwe_lookup", "finding": "Missing required width specifier", "citation": "risky_pattern: %s, required: %31s"}
-  ],
-  "reasoning": "scanf() is called with '%s' format without width specifier. This is inherently dangerous as input is unbounded. CWE-120 requires width specifier like '%31s' for 32-byte buffer."
-}
-
-EXAMPLE 5: INSUFFICIENT EVIDENCE
-Input: void process(char *data) { handle(data); }
-
-Step 1: ast_analyze returns:
-  - risky_sinks: []
-  - function_calls: [{"name": "handle", "arguments": ["data"]}]
-
-Output:
-{
-  "hypothesis": "NOT_ENOUGH_EVIDENCE",
-  "confidence": 0.2,
-  "evidence": [
-    {"tool": "ast_analyze", "finding": "No risky sinks detected", "citation": "risky_sinks: []"}
-  ],
-  "reasoning": "No buffer-related dangerous functions detected. Cannot determine if handle() is safe without its implementation."
-}
-
-=== END EXAMPLES ===
+Output: {"chain_of_thought":{"step1_sinks":"strcpy found, risky but needs analysis","step2_data_flow":"user_input (parameter) flows to strcpy arg2","step3_safety_checks":"No strlen check before strcpy","step4_synthesis":"All 3 conditions met with strong evidence"},"hypothesis":"VULNERABLE","confidence":0.92,"evidence":[{"tool":"ast_analyze","finding":"strcpy sink","citation":"risky_sinks:[{function:strcpy,args:[buffer,user_input]}]"}],"reasoning":"strcpy copies unbounded user_input to 32-byte buffer without length check"}
 """
 
 
@@ -318,7 +236,7 @@ def _execute_tool(tool_name: str, tool_input: dict) -> dict:
             if "source_code" not in tool_input:
                 return {"error": "Missing required parameter: source_code", "risky_sinks": []}
             return ast_analyze_tool(tool_input["source_code"])
-        
+
         elif tool_name == "static_analyze":
             if "source_code" not in tool_input:
                 return {"error": "Missing required parameter: source_code", "findings": []}
@@ -326,7 +244,7 @@ def _execute_tool(tool_name: str, tool_input: dict) -> dict:
                 tool_input["source_code"],
                 tool_input.get("context"),
             )
-        
+
         elif tool_name == "cwe_lookup":
             if "sink_function" not in tool_input:
                 return {"error": "Missing required parameter: sink_function", "safety_checks": []}
@@ -334,7 +252,7 @@ def _execute_tool(tool_name: str, tool_input: dict) -> dict:
                 tool_input["sink_function"],
                 tool_input.get("query_type", "safety_checks"),
             )
-        
+
         elif tool_name == "taint_analyze":
             if "source_code" not in tool_input:
                 return {"error": "Missing required parameter: source_code", "taint_paths": []}
@@ -343,7 +261,7 @@ def _execute_tool(tool_name: str, tool_input: dict) -> dict:
                 return taint_analyze_tool(tool_input["source_code"])
             except ImportError:
                 return {"error": "Taint analysis tool not available", "taint_paths": []}
-        
+
         elif tool_name == "pattern_analyze":
             if "source_code" not in tool_input:
                 return {"error": "Missing required parameter: source_code", "matches": []}
@@ -355,7 +273,7 @@ def _execute_tool(tool_name: str, tool_input: dict) -> dict:
                 )
             except ImportError:
                 return {"error": "Pattern analysis tool not available", "matches": []}
-        
+
         elif tool_name == "cfg_analyze":
             if "source_code" not in tool_input:
                 return {"error": "Missing required parameter: source_code", "nodes": [], "edges": []}
@@ -367,12 +285,24 @@ def _execute_tool(tool_name: str, tool_input: dict) -> dict:
                 )
             except ImportError:
                 return {"error": "CFG analysis tool not available", "nodes": [], "edges": []}
-        
+
         else:
             return {"error": f"Unknown tool: {tool_name}"}
-    
+
     except Exception as e:
         return {"error": f"Tool execution error: {str(e)}"}
+
+
+async def _execute_tool_async(tool_name: str, tool_input: dict) -> dict:
+    """Execute an MCP tool asynchronously."""
+    # Run the synchronous tool in a thread pool to avoid blocking
+    return await asyncio.to_thread(_execute_tool, tool_name, tool_input)
+
+
+async def _execute_tools_parallel(calls: list[tuple[str, dict]]) -> list[dict]:
+    """Execute multiple tools in parallel."""
+    tasks = [_execute_tool_async(name, args) for name, args in calls]
+    return await asyncio.gather(*tasks)
 
 
 class OrchestratorAgent:
@@ -562,64 +492,102 @@ After using tools, provide your hypothesis in the specified JSON format."""
         cwe_focus: str | None = None,
     ) -> tuple[OrchestratorHypothesis, dict]:
         """
-        Batch analysis: Call all tools at once, then synthesize with ONE LLM call.
-        
+        Batch analysis: Call all tools in parallel, then synthesize with ONE LLM call.
+
         This is faster and cheaper than the agentic approach but less flexible.
-        
+
         Args:
             source_code: C source code to analyze
             cwe_focus: Optional specific CWE to focus on
-            
+
+        Returns:
+            Tuple of (hypothesis, tool_outputs dict)
+        """
+        return asyncio.run(self.analyze_batch_async(source_code, cwe_focus))
+
+    async def analyze_batch_async(
+        self,
+        source_code: str,
+        cwe_focus: str | None = None,
+    ) -> tuple[OrchestratorHypothesis, dict]:
+        """
+        Async batch analysis: Call all tools in parallel waves, then synthesize.
+
+        Wave 1 (parallel): ast_analyze, static_analyze, taint_analyze, pattern_analyze
+        Wave 2 (parallel, depends on Wave 1): cfg_analyze, cwe_lookup calls
+
+        Args:
+            source_code: C source code to analyze
+            cwe_focus: Optional specific CWE to focus on
+
         Returns:
             Tuple of (hypothesis, tool_outputs dict)
         """
         self.tool_calls = []
         self.tool_results = {}
-        
-        # Step 1: Call all tools in parallel (deterministic)
-        ast_result = _execute_tool("ast_analyze", {"source_code": source_code})
+
+        # Wave 1: Independent tools (no dependencies) - run in parallel
+        wave1_calls = [
+            ("ast_analyze", {"source_code": source_code}),
+            ("static_analyze", {"source_code": source_code}),
+            ("taint_analyze", {"source_code": source_code}),
+            ("pattern_analyze", {"source_code": source_code, "cwe_filter": cwe_focus}),
+        ]
+
+        wave1_results = await _execute_tools_parallel(wave1_calls)
+
+        ast_result, static_result, taint_result, pattern_result = wave1_results
+
+        # Store Wave 1 results
         self.tool_results["ast_analyze"] = ast_result
         self.tool_calls.append({"tool": "ast_analyze", "input": {"source_code": "..."}, "output": ast_result})
-        
-        static_result = _execute_tool("static_analyze", {"source_code": source_code})
+
         self.tool_results["static_analyze"] = static_result
         self.tool_calls.append({"tool": "static_analyze", "input": {"source_code": "..."}, "output": static_result})
-        
-        taint_result = _execute_tool("taint_analyze", {"source_code": source_code})
+
         self.tool_results["taint_analyze"] = taint_result
         self.tool_calls.append({"tool": "taint_analyze", "input": {"source_code": "..."}, "output": taint_result})
-        
-        pattern_result = _execute_tool("pattern_analyze", {"source_code": source_code, "cwe_filter": cwe_focus})
+
         self.tool_results["pattern_analyze"] = pattern_result
         self.tool_calls.append({"tool": "pattern_analyze", "input": {"source_code": "..."}, "output": pattern_result})
-        
-        # Get risky sinks from AST for CFG analysis
+
+        # Extract risky sinks from AST for Wave 2
         risky_sinks = [s.get("function", "") for s in ast_result.get("risky_sinks", [])]
-        cfg_result = _execute_tool("cfg_analyze", {"source_code": source_code, "risky_sinks": risky_sinks})
+        unique_sinks = list(set(s for s in risky_sinks if s))
+
+        # Wave 2: Dependent tools - run in parallel
+        wave2_calls = [
+            ("cfg_analyze", {"source_code": source_code, "risky_sinks": risky_sinks}),
+        ]
+        # Add CWE lookup for each unique sink
+        for sink in unique_sinks:
+            wave2_calls.append(("cwe_lookup", {"sink_function": sink}))
+
+        wave2_results = await _execute_tools_parallel(wave2_calls)
+
+        # Store Wave 2 results
+        cfg_result = wave2_results[0]
         self.tool_results["cfg_analyze"] = cfg_result
         self.tool_calls.append({"tool": "cfg_analyze", "input": {"source_code": "...", "risky_sinks": risky_sinks}, "output": cfg_result})
-        
-        # Call CWE lookup for each risky sink
+
+        # Store CWE lookup results
         cwe_results = {}
-        for sink in ast_result.get("risky_sinks", []):
-            func_name = sink.get("function", "")
-            if func_name and func_name not in cwe_results:
-                cwe_result = _execute_tool("cwe_lookup", {"sink_function": func_name})
-                cwe_results[func_name] = cwe_result
-                self.tool_calls.append({"tool": "cwe_lookup", "input": {"sink_function": func_name}, "output": cwe_result})
-        
+        for i, sink in enumerate(unique_sinks):
+            cwe_result = wave2_results[i + 1]  # +1 because cfg_analyze is first
+            cwe_results[sink] = cwe_result
+            self.tool_calls.append({"tool": "cwe_lookup", "input": {"sink_function": sink}, "output": cwe_result})
+
         if cwe_results:
-            # Combine all CWE results
             self.tool_results["cwe_lookup"] = {
                 "sinks": cwe_results,
                 "summary": f"Looked up {len(cwe_results)} sink functions"
             }
-        
+
         # Step 2: Synthesize with ONE LLM call
         cwe_context = f"\nFocus especially on {cwe_focus} vulnerabilities." if cwe_focus else ""
-        
+
         tool_outputs_text = self._format_tool_outputs_for_synthesis()
-        
+
         synthesis_prompt = f"""Based on the following tool analysis results, provide your vulnerability hypothesis.
 
 SOURCE CODE:
@@ -631,44 +599,56 @@ SOURCE CODE:
 TOOL ANALYSIS RESULTS:
 {tool_outputs_text}
 
-=== INHERENTLY DANGEROUS FUNCTIONS (ALWAYS VULNERABLE) ===
-If ANY of these are detected, conclude VULNERABLE immediately with HIGH confidence:
-- gets() → ALWAYS vulnerable, no safe usage possible. Confidence: 0.95+
-- scanf("%s") without width → unbounded input. Confidence: 0.90+  
-- sprintf() with %s from external input → no bounds check. Confidence: 0.85+
+=== CHAIN OF THOUGHT REASONING ===
+Before providing your final answer, think through these steps:
 
-These do NOT require multiple tools to confirm - single detection is sufficient evidence.
+STEP 1 - SINK IDENTIFICATION:
+- What risky functions are in the AST results?
+- Are any INHERENTLY DANGEROUS (gets, unbounded scanf, sprintf %s)?
 
-Based on ALL the tool outputs above, provide your hypothesis in JSON format:
+STEP 2 - DATA FLOW ANALYSIS:
+- What taint sources exist (parameters, stdin, network)?
+- Does data flow from sources to sinks?
+
+STEP 3 - SAFETY CHECK EVALUATION:
+- What safety checks does CWE knowledge require?
+- Are these checks present in the code?
+
+STEP 4 - EVIDENCE SYNTHESIS:
+- Do multiple tools agree?
+- What is the overall evidence strength?
+
+=== INHERENTLY DANGEROUS FUNCTIONS ===
+If ANY detected, conclude VULNERABLE immediately (confidence 0.95+):
+- gets() → No safe usage possible
+- scanf("%s") without width → Unbounded input
+- sprintf() with %s from external input → No bounds
+
+Provide your answer in JSON format:
 {{
+  "chain_of_thought": {{
+    "step1_sinks": "risky sinks found",
+    "step2_data_flow": "source to sink flow",
+    "step3_safety_checks": "checks present/missing",
+    "step4_synthesis": "evidence summary"
+  }},
   "hypothesis": "VULNERABLE" | "SAFE" | "NOT_ENOUGH_EVIDENCE",
   "confidence": 0.0-1.0,
   "evidence": [
-    {{"tool": "tool_name", "finding": "what was found", "citation": "exact quote from tool output"}}
+    {{"tool": "tool_name", "finding": "what was found", "citation": "exact quote"}}
   ],
-  "reasoning": "detailed explanation citing specific tool outputs"
-}}
-
-IMPORTANT:
-- Base your conclusion ONLY on the tool outputs provided
-- Cite specific findings from each relevant tool
-- IMMEDIATELY conclude VULNERABLE for inherently dangerous functions (gets, unbounded scanf)
-- Confidence should reflect evidence strength:
-  - 0.95+: Inherently dangerous function detected (gets, unbounded scanf)
-  - 0.85-0.95: Multiple tools confirm OR clear dangerous pattern
-  - 0.70-0.85: Strong evidence from 2+ tools
-  - 0.50-0.70: Single tool with clear evidence
-  - <0.50: Conflicting or insufficient evidence"""
+  "reasoning": "final explanation citing tool outputs"
+}}"""
 
         messages = [{"role": "user", "content": synthesis_prompt}]
-        
+
         response = self.client.chat(
             messages=messages,
             system=ORCHESTRATOR_SYSTEM_PROMPT,
             max_tokens=MAX_TOKENS,
             temperature=TEMPERATURE,
         )
-        
+
         hypothesis = self._extract_hypothesis(response.text)
         return hypothesis, self.tool_results
     

@@ -16,16 +16,50 @@ CWE-120 occurs when:
 - A program copies data to a buffer without checking if the data fits
 - Common risky functions: strcpy, memcpy, sprintf, gets, scanf without width specifier
 
-Respond with ONLY a JSON object. Choose the appropriate verdict:
+=== CHAIN OF THOUGHT ANALYSIS ===
+Before providing your verdict, think through these steps:
 
-VULNERABLE example (when buffer overflow is possible):
-{"verdict":"VULNERABLE","confidence":0.9,"reasoning":"strcpy copies unbounded input to fixed buffer without size check"}
+STEP 1 - IDENTIFY BUFFERS:
+- What buffers exist in the code? (arrays, malloc'd memory)
+- What are their sizes? (fixed, dynamic, unknown)
 
-SAFE example (when proper bounds checking exists):
-{"verdict":"SAFE","confidence":0.9,"reasoning":"strncpy with size limit and null termination ensures no overflow"}
+STEP 2 - IDENTIFY DATA SOURCES:
+- Where does input data come from? (parameters, stdin, files, network)
+- Is the input size bounded or unbounded?
 
-UNCERTAIN example (when you cannot determine):
-{"verdict":"UNCERTAIN","confidence":0.3,"reasoning":"cannot determine buffer sizes or data flow"}
+STEP 3 - TRACE DATA FLOW:
+- How does data move from source to buffer?
+- Which functions perform the copy? (strcpy, memcpy, sprintf, etc.)
+
+STEP 4 - CHECK FOR VALIDATION:
+- Is there a size check before the copy?
+- Are safe alternatives used? (strncpy with size, snprintf, fgets)
+- Is null termination handled?
+
+STEP 5 - DETERMINE VERDICT:
+- If unbounded copy to fixed buffer → VULNERABLE
+- If size-limited copy or validation present → SAFE
+- If cannot determine sizes or flow → UNCERTAIN
+
+=== INHERENTLY DANGEROUS (Always VULNERABLE) ===
+- gets() - No size limit possible
+- scanf("%s") without width - Unbounded
+- sprintf with %s from external input - No bounds
+
+Provide your analysis in JSON format:
+
+{
+  "chain_of_thought": {
+    "step1_buffers": "buffers and their sizes",
+    "step2_sources": "data sources identified",
+    "step3_flow": "how data reaches buffers",
+    "step4_validation": "what checks exist",
+    "step5_verdict": "reasoning for verdict"
+  },
+  "verdict": "VULNERABLE|SAFE|UNCERTAIN",
+  "confidence": 0.0-1.0,
+  "reasoning": "summary of analysis"
+}
 
 Analyze this code:
 """

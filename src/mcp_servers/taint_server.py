@@ -5,7 +5,11 @@ This MCP tool server performs lightweight taint analysis to identify:
 - Taint sinks: Dangerous functions (memcpy, strcpy, etc.)
 - Taint propagation paths: How data flows from sources to sinks
 
-This is a lightweight implementation using AST traversal.
+Enhanced features:
+- Alias analysis: Track pointer assignments (p = &x)
+- Field sensitivity: Track struct fields separately (s.field1 vs s.field2)
+- Array index tracking: Track array element access (arr[i])
+
 For production, consider integrating with tools like:
 - Joern (Code Property Graph)
 - Infer (Facebook)
@@ -13,6 +17,7 @@ For production, consider integrating with tools like:
 """
 
 import re
+from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
@@ -55,6 +60,54 @@ TAINT_PROPAGATORS = [
 ]
 
 
+@dataclass(frozen=True)
+class TaintLocation:
+    """Represents a precise memory location that can be tainted.
+
+    This enables field-sensitive and array-sensitive taint tracking.
+    """
+    variable: str
+    fields: tuple[str, ...] = ()      # For struct.field1.field2
+    indices: tuple[str, ...] = ()     # For arr[i][j] (symbolic)
+    is_deref: bool = False            # For *ptr
+
+    def __str__(self) -> str:
+        result = self.variable
+        if self.is_deref:
+            result = f"*{result}"
+        for f in self.fields:
+            result = f"{result}.{f}"
+        for i in self.indices:
+            result = f"{result}[{i}]"
+        return result
+
+    def base_matches(self, other: "TaintLocation") -> bool:
+        """Check if this location may alias with another (conservative)."""
+        # Same base variable required
+        if self.variable != other.variable:
+            return False
+        # If either has no fields/indices, it represents the whole object
+        if not self.fields and not other.fields and not self.indices and not other.indices:
+            return True
+        # Field-sensitive: must match field path prefix
+        if self.fields and other.fields:
+            min_len = min(len(self.fields), len(other.fields))
+            return self.fields[:min_len] == other.fields[:min_len]
+        # If one has fields and other doesn't, the one without fields covers all
+        return True
+
+    def to_simple_string(self) -> str:
+        """Convert to simple variable name for backward compatibility."""
+        return self.variable
+
+
+@dataclass
+class AliasInfo:
+    """Tracks pointer aliasing information."""
+    pointer: str
+    targets: set[str] = field(default_factory=set)
+
+
 @dataclass
 class TaintSource:
     """A source of tainted data."""
@@ -62,6 +115,7 @@ class TaintSource:
     source_type: str  # parameter, stdin, file, network, environment
     line: int
     variable: Optional[str] = None
+    location: Optional[TaintLocation] = None
 
 
 @dataclass
@@ -90,78 +144,95 @@ class TaintAnalysisOutput:
     taint_paths: list[TaintPath] = field(default_factory=list)
     untainted_sinks: list[TaintSink] = field(default_factory=list)
     validation_checks: list[dict] = field(default_factory=list)
+    alias_info: dict[str, set[str]] = field(default_factory=dict)
     parse_error: Optional[str] = None
 
 
 def analyze_taint(source_code: str) -> TaintAnalysisOutput:
     """
     Perform lightweight taint analysis on C source code.
-    
+
     This identifies:
     1. Sources of external/untrusted data
     2. Dangerous sinks
     3. Data flow paths from sources to sinks
     4. Validation checks that may sanitize tainted data
+
+    Enhanced with:
+    - Alias analysis for pointer tracking
+    - Field-sensitive taint propagation
+    - Array index awareness
     """
     source_bytes = source_code.encode("utf-8")
-    
+
     try:
         tree = parser.parse(source_bytes)
     except Exception as e:
         return TaintAnalysisOutput(parse_error=f"Parse error: {str(e)}")
-    
+
     root = tree.root_node
-    
+
     # Find function definition
     func_node = _find_function_definition(root)
     if not func_node:
         return TaintAnalysisOutput(parse_error="No function definition found")
-    
+
     # Step 1: Identify taint sources
     taint_sources = _find_taint_sources(func_node, source_bytes)
-    
+
     # Step 2: Identify taint sinks
     taint_sinks = _find_taint_sinks(func_node, source_bytes)
-    
-    # Step 3: Build variable assignments map
-    assignments = _build_assignment_map(func_node, source_bytes)
-    
-    # Step 4: Find validation checks (bounds checking)
+
+    # Step 3: Build alias graph for pointer analysis
+    alias_graph = _build_alias_graph(func_node, source_bytes)
+
+    # Step 4: Build variable assignments map (enhanced with field/array tracking)
+    assignments, location_assignments = _build_assignment_map_enhanced(func_node, source_bytes)
+
+    # Step 5: Find validation checks (bounds checking)
     validation_checks = _find_validation_checks(func_node, source_bytes)
-    
-    # Step 5: Trace taint flow
+
+    # Step 6: Trace taint flow with enhanced propagation
     tainted_vars = set()
+    tainted_locations: set[TaintLocation] = set()
+
     for src in taint_sources:
         if src.variable:
             tainted_vars.add(src.variable)
-    
-    # Propagate taint through assignments
-    tainted_vars = _propagate_taint(tainted_vars, assignments)
-    
-    # Step 6: Match tainted variables to sinks
+            tainted_locations.add(TaintLocation(variable=src.variable))
+        if src.location:
+            tainted_locations.add(src.location)
+
+    # Propagate taint through assignments (enhanced with alias awareness)
+    tainted_vars = _propagate_taint_enhanced(tainted_vars, assignments, alias_graph)
+    tainted_locations = _propagate_taint_locations(tainted_locations, location_assignments, alias_graph)
+
+    # Step 7: Match tainted variables to sinks
     taint_paths = []
     untainted_sinks = []
-    
+
     for sink in taint_sinks:
         tainted_args = []
         for i, arg in enumerate(sink.arguments):
             # Check if argument or any variable it references is tainted
-            if _is_tainted(arg, tainted_vars, assignments):
+            if _is_tainted_enhanced(arg, tainted_vars, tainted_locations, assignments, alias_graph):
                 tainted_args.append(i)
-        
+
         if tainted_args:
             sink.tainted_args = tainted_args
-            
+
             # Find the source for each tainted path
             for src in taint_sources:
-                if src.variable and _is_tainted(sink.arguments[tainted_args[0]], {src.variable}, assignments):
+                if src.variable and _is_tainted_enhanced(
+                    sink.arguments[tainted_args[0]], {src.variable}, set(), assignments, alias_graph
+                ):
                     # Check if validated
                     is_validated = _check_validation_before_line(
-                        validation_checks, 
-                        src.variable, 
+                        validation_checks,
+                        src.variable,
                         sink.line
                     )
-                    
+
                     path = TaintPath(
                         source=src,
                         sink=sink,
@@ -171,13 +242,14 @@ def analyze_taint(source_code: str) -> TaintAnalysisOutput:
                     taint_paths.append(path)
         else:
             untainted_sinks.append(sink)
-    
+
     return TaintAnalysisOutput(
         taint_sources=taint_sources,
         taint_sinks=taint_sinks,
         taint_paths=taint_paths,
         untainted_sinks=untainted_sinks,
         validation_checks=validation_checks,
+        alias_info={k: v for k, v in alias_graph.items()},
     )
 
 
@@ -248,16 +320,16 @@ def _find_taint_sinks(func_node: Node, source: bytes) -> list[TaintSink]:
 def _build_assignment_map(func_node: Node, source: bytes) -> dict[str, list[str]]:
     """
     Build a map of variable assignments.
-    
+
     Returns: {variable_name: [source_variables_or_expressions]}
     """
     assignments = {}
-    
+
     # Find all assignment expressions
     for node in _find_all_nodes_type(func_node, "assignment_expression"):
         left = None
         right = None
-        
+
         for child in node.children:
             if child.type == "identifier" and left is None:
                 left = source[child.start_byte:child.end_byte].decode("utf-8")
@@ -265,17 +337,17 @@ def _build_assignment_map(func_node: Node, source: bytes) -> dict[str, list[str]
                 continue
             else:
                 right = source[child.start_byte:child.end_byte].decode("utf-8")
-        
+
         if left and right:
             if left not in assignments:
                 assignments[left] = []
             assignments[left].append(right)
-    
+
     # Find init_declarators (int x = y;)
     for node in _find_all_nodes_type(func_node, "init_declarator"):
         var_name = None
         init_value = None
-        
+
         for child in node.children:
             if child.type == "identifier":
                 var_name = source[child.start_byte:child.end_byte].decode("utf-8")
@@ -285,13 +357,280 @@ def _build_assignment_map(func_node: Node, source: bytes) -> dict[str, list[str]
                         var_name = source[sub.start_byte:sub.end_byte].decode("utf-8")
             elif child.type not in ["=", "[", "]"]:
                 init_value = source[child.start_byte:child.end_byte].decode("utf-8")
-        
+
         if var_name and init_value:
             if var_name not in assignments:
                 assignments[var_name] = []
             assignments[var_name].append(init_value)
-    
+
     return assignments
+
+
+def _build_alias_graph(func_node: Node, source: bytes) -> dict[str, set[str]]:
+    """
+    Build points-to information from pointer assignments.
+
+    Tracks:
+    - p = &x  -> p points to x
+    - p = q   -> p points to whatever q points to
+    """
+    alias_graph: dict[str, set[str]] = defaultdict(set)
+
+    for node in _find_all_nodes_type(func_node, "assignment_expression"):
+        left = None
+        right = None
+        right_node = None
+
+        for child in node.children:
+            if child.type == "identifier" and left is None:
+                left = source[child.start_byte:child.end_byte].decode("utf-8")
+            elif child.type == "=":
+                continue
+            else:
+                right = source[child.start_byte:child.end_byte].decode("utf-8")
+                right_node = child
+
+        if left and right and right_node:
+            # Handle: p = &x (address-of)
+            if right_node.type == "pointer_expression" and right.startswith("&"):
+                target = right[1:].strip()
+                alias_graph[left].add(target)
+
+            # Handle: p = q (pointer copy)
+            elif right_node.type == "identifier":
+                if right in alias_graph:
+                    alias_graph[left].update(alias_graph[right])
+                else:
+                    # q might be a pointer parameter
+                    alias_graph[left].add(right)
+
+    return dict(alias_graph)
+
+
+def _build_assignment_map_enhanced(
+    func_node: Node, source: bytes
+) -> tuple[dict[str, list[str]], dict[TaintLocation, list[TaintLocation]]]:
+    """
+    Build enhanced assignment maps with field and array sensitivity.
+
+    Returns:
+        Tuple of (simple_assignments, location_assignments)
+    """
+    simple_assignments = _build_assignment_map(func_node, source)
+    location_assignments: dict[TaintLocation, list[TaintLocation]] = defaultdict(list)
+
+    for node in _find_all_nodes_type(func_node, "assignment_expression"):
+        left_node = None
+        right_node = None
+
+        children = list(node.children)
+        for i, child in enumerate(children):
+            if child.type == "=":
+                if i > 0:
+                    left_node = children[i - 1]
+                if i < len(children) - 1:
+                    right_node = children[i + 1]
+                break
+
+        if left_node and right_node:
+            left_loc = _parse_location_from_node(left_node, source)
+            right_loc = _parse_location_from_node(right_node, source)
+
+            if left_loc and right_loc:
+                location_assignments[left_loc].append(right_loc)
+
+    return simple_assignments, dict(location_assignments)
+
+
+def _parse_location_from_node(node: Node, source: bytes) -> Optional[TaintLocation]:
+    """Parse an AST node into a TaintLocation."""
+    text = source[node.start_byte:node.end_byte].decode("utf-8")
+
+    if node.type == "field_expression":
+        # Handle: struct.field or ptr->field
+        base_node = None
+        field_name = None
+
+        for child in node.children:
+            if child.type in (".", "->"):
+                continue
+            elif child.type == "field_identifier":
+                field_name = source[child.start_byte:child.end_byte].decode("utf-8")
+            elif base_node is None:
+                base_node = child
+
+        if base_node and field_name:
+            base_loc = _parse_location_from_node(base_node, source)
+            if base_loc:
+                return TaintLocation(
+                    variable=base_loc.variable,
+                    fields=base_loc.fields + (field_name,),
+                    indices=base_loc.indices,
+                    is_deref=base_loc.is_deref,
+                )
+
+    elif node.type == "subscript_expression":
+        # Handle: arr[index]
+        base_node = None
+        index_text = None
+
+        for child in node.children:
+            if child.type in ("[", "]"):
+                continue
+            elif base_node is None:
+                base_node = child
+            else:
+                index_text = source[child.start_byte:child.end_byte].decode("utf-8")
+
+        if base_node:
+            base_loc = _parse_location_from_node(base_node, source)
+            if base_loc:
+                return TaintLocation(
+                    variable=base_loc.variable,
+                    fields=base_loc.fields,
+                    indices=base_loc.indices + (index_text or "?",),
+                    is_deref=base_loc.is_deref,
+                )
+
+    elif node.type == "pointer_expression" and text.startswith("*"):
+        # Handle: *ptr
+        if len(node.children) > 1:
+            inner_loc = _parse_location_from_node(node.children[1], source)
+            if inner_loc:
+                return TaintLocation(
+                    variable=inner_loc.variable,
+                    fields=inner_loc.fields,
+                    indices=inner_loc.indices,
+                    is_deref=True,
+                )
+
+    elif node.type == "identifier":
+        return TaintLocation(variable=text)
+
+    # Fallback: extract base variable name
+    var_match = re.match(r'^([a-zA-Z_]\w*)', text)
+    if var_match:
+        return TaintLocation(variable=var_match.group(1))
+
+    return None
+
+
+def _propagate_taint_enhanced(
+    tainted: set[str],
+    assignments: dict[str, list[str]],
+    alias_graph: dict[str, set[str]]
+) -> set[str]:
+    """Propagate taint through variable assignments with alias awareness."""
+    tainted = set(tainted)  # Make a copy
+    changed = True
+
+    while changed:
+        changed = False
+        for var, sources in assignments.items():
+            if var not in tainted:
+                for src in sources:
+                    # Direct taint check
+                    for t in tainted:
+                        if t in src:
+                            tainted.add(var)
+                            changed = True
+                            break
+
+                    # Check via alias: if src points to something tainted
+                    if var not in tainted:
+                        for t in list(tainted):
+                            if t in alias_graph:
+                                for alias_target in alias_graph[t]:
+                                    if alias_target in src:
+                                        tainted.add(var)
+                                        changed = True
+                                        break
+
+        # Also propagate through alias graph
+        for ptr, targets in alias_graph.items():
+            if ptr in tainted:
+                for target in targets:
+                    if target not in tainted:
+                        tainted.add(target)
+                        changed = True
+
+    return tainted
+
+
+def _propagate_taint_locations(
+    tainted: set[TaintLocation],
+    assignments: dict[TaintLocation, list[TaintLocation]],
+    alias_graph: dict[str, set[str]]
+) -> set[TaintLocation]:
+    """Propagate taint through location-aware assignments."""
+    tainted = set(tainted)
+    changed = True
+
+    while changed:
+        changed = False
+        for target, sources in assignments.items():
+            if target in tainted:
+                continue
+
+            for src in sources:
+                # Check if source matches any tainted location
+                for t in tainted:
+                    if t.base_matches(src):
+                        tainted.add(target)
+                        changed = True
+                        break
+
+                # Check via alias
+                if target not in tainted:
+                    for t in list(tainted):
+                        if t.variable in alias_graph:
+                            for alias_target in alias_graph[t.variable]:
+                                if src.variable == alias_target:
+                                    tainted.add(target)
+                                    changed = True
+                                    break
+
+    return tainted
+
+
+def _is_tainted_enhanced(
+    expr: str,
+    tainted_vars: set[str],
+    tainted_locations: set[TaintLocation],
+    assignments: dict[str, list[str]],
+    alias_graph: dict[str, set[str]]
+) -> bool:
+    """Check if an expression uses any tainted variables (enhanced with alias awareness)."""
+    # Direct variable check
+    for var in tainted_vars:
+        if var in expr:
+            return True
+
+    # Check via alias
+    for var in tainted_vars:
+        if var in alias_graph:
+            for target in alias_graph[var]:
+                if target in expr:
+                    return True
+
+    # Check tainted locations
+    for loc in tainted_locations:
+        if loc.variable in expr:
+            return True
+
+    # Extract variable names from expression
+    var_pattern = re.compile(r'\b([a-zA-Z_]\w*)\b')
+    expr_vars = var_pattern.findall(expr)
+
+    for v in expr_vars:
+        if v in tainted_vars:
+            return True
+        # Check if v is aliased to something tainted
+        for tainted_var in tainted_vars:
+            if tainted_var in alias_graph and v in alias_graph[tainted_var]:
+                return True
+
+    return False
 
 
 def _find_validation_checks(func_node: Node, source: bytes) -> list[dict]:

@@ -188,20 +188,22 @@ def _extract_parameters(func_node: Node, source: bytes) -> list[Parameter]:
 def _extract_local_variables(func_node: Node, source: bytes) -> list[LocalVariable]:
     """Extract local variable declarations from the function body."""
     variables = []
-    
+
     # Find the compound statement (function body)
     body = _find_node_type(func_node, "compound_statement")
     if not body:
         return variables
-    
+
     # Find all declarations
     declarations = _find_all_nodes_type(body, "declaration")
-    
+
     for decl in declarations:
         var_type_parts = []
         var_name = None
         line = decl.start_point[0] + 1  # 1-indexed
-        
+        array_size = None
+        array_size_expr = None
+
         for child in decl.children:
             if child.type in ("primitive_type", "type_identifier", "sized_type_specifier"):
                 var_type_parts.append(
@@ -213,11 +215,12 @@ def _extract_local_variables(func_node: Node, source: bytes) -> list[LocalVariab
                     if subchild.type == "identifier":
                         var_name = source[subchild.start_byte:subchild.end_byte].decode("utf-8")
                     elif subchild.type == "array_declarator":
-                        # Array declaration
-                        for arr_child in subchild.children:
-                            if arr_child.type == "identifier":
-                                var_name = source[arr_child.start_byte:arr_child.end_byte].decode("utf-8")
-                        var_type_parts.append("[]")
+                        # Array declaration - extract size
+                        var_name, array_size, array_size_expr = _extract_array_info(
+                            subchild, source, var_name
+                        )
+                        size_str = _format_array_size(array_size, array_size_expr)
+                        var_type_parts.append(f"[{size_str}]")
                     elif subchild.type == "pointer_declarator":
                         for ptr_child in subchild.children:
                             if ptr_child.type == "identifier":
@@ -226,24 +229,138 @@ def _extract_local_variables(func_node: Node, source: bytes) -> list[LocalVariab
             elif child.type == "identifier":
                 var_name = source[child.start_byte:child.end_byte].decode("utf-8")
             elif child.type == "array_declarator":
-                for arr_child in child.children:
-                    if arr_child.type == "identifier":
-                        var_name = source[arr_child.start_byte:arr_child.end_byte].decode("utf-8")
-                var_type_parts.append("[]")
+                var_name, array_size, array_size_expr = _extract_array_info(
+                    child, source, var_name
+                )
+                size_str = _format_array_size(array_size, array_size_expr)
+                var_type_parts.append(f"[{size_str}]")
             elif child.type == "pointer_declarator":
                 for ptr_child in child.children:
                     if ptr_child.type == "identifier":
                         var_name = source[ptr_child.start_byte:ptr_child.end_byte].decode("utf-8")
                 var_type_parts.append("*")
-        
+
         if var_name:
             variables.append(LocalVariable(
                 name=var_name,
                 type=" ".join(var_type_parts) if var_type_parts else "unknown",
                 line=line,
+                size=array_size,
+                size_expr=array_size_expr,
             ))
-    
+
+    # Also extract heap allocations
+    heap_vars = _extract_heap_allocations(body, source)
+    for var_name, alloc_info in heap_vars.items():
+        # Check if variable already exists, update with allocation info
+        found = False
+        for var in variables:
+            if var.name == var_name:
+                var.size_expr = alloc_info.get("size_expr")
+                found = True
+                break
+        if not found:
+            variables.append(LocalVariable(
+                name=var_name,
+                type="*",  # Heap allocated pointer
+                line=alloc_info.get("line", 0),
+                size=None,
+                size_expr=alloc_info.get("size_expr"),
+            ))
+
     return variables
+
+
+def _extract_array_info(
+    array_node: Node, source: bytes, current_name: str | None
+) -> tuple[str | None, int | None, str | None]:
+    """Extract array name and size from an array_declarator node.
+
+    Array declarator structure: identifier "[" size_expression "]"
+    The first child is typically the variable name, and subsequent children
+    within brackets are the size.
+    """
+    var_name = current_name
+    array_size = None
+    array_size_expr = None
+    found_open_bracket = False
+
+    for arr_child in array_node.children:
+        if arr_child.type == "[":
+            found_open_bracket = True
+            continue
+        elif arr_child.type == "]":
+            continue
+
+        if not found_open_bracket:
+            # Before the bracket - this is the variable name
+            if arr_child.type == "identifier":
+                var_name = source[arr_child.start_byte:arr_child.end_byte].decode("utf-8")
+        else:
+            # Inside the brackets - this is the size
+            if arr_child.type == "number_literal":
+                size_text = source[arr_child.start_byte:arr_child.end_byte].decode("utf-8")
+                try:
+                    array_size = int(size_text)
+                except ValueError:
+                    array_size_expr = size_text
+            elif arr_child.type in ("identifier", "binary_expression", "sizeof_expression",
+                                     "unary_expression", "parenthesized_expression"):
+                array_size_expr = source[arr_child.start_byte:arr_child.end_byte].decode("utf-8")
+
+    return var_name, array_size, array_size_expr
+
+
+def _format_array_size(size: int | None, size_expr: str | None) -> str:
+    """Format array size for type string."""
+    if size is not None:
+        return str(size)
+    elif size_expr is not None:
+        return size_expr
+    return ""
+
+
+def _extract_heap_allocations(body: Node, source: bytes) -> dict[str, dict]:
+    """Extract buffer sizes from malloc/calloc/realloc calls."""
+    allocations = {}
+
+    # Find all assignment expressions
+    for node in _find_all_nodes_type(body, "assignment_expression"):
+        left = None
+        right = None
+
+        for child in node.children:
+            if child.type == "identifier" and left is None:
+                left = child
+            elif child.type == "call_expression":
+                right = child
+
+        if left and right:
+            # Check if it's a memory allocation function
+            func_name = None
+            for child in right.children:
+                if child.type == "identifier":
+                    func_name = source[child.start_byte:child.end_byte].decode("utf-8")
+                    break
+
+            if func_name in ("malloc", "calloc", "realloc", "alloca"):
+                var_name = source[left.start_byte:left.end_byte].decode("utf-8")
+
+                # Extract arguments
+                for child in right.children:
+                    if child.type == "argument_list":
+                        arg_text = source[child.start_byte:child.end_byte].decode("utf-8")
+                        # Clean up parentheses
+                        arg_text = arg_text.strip("()")
+
+                        allocations[var_name] = {
+                            "allocator": func_name,
+                            "size_expr": arg_text,
+                            "line": node.start_point[0] + 1
+                        }
+                        break
+
+    return allocations
 
 
 def _find_all_nodes_type(node: Node, node_type: str) -> list[Node]:
