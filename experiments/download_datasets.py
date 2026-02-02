@@ -34,17 +34,20 @@ DEFAULT_OUTPUT_DIR = Path(__file__).parent / "datasets"
 # CWE configurations for download
 CWE_CONFIGS = {
     # Memory safety
-    120: {"name": "Buffer Copy", "sard_prefix": "CWE120"},
-    121: {"name": "Stack Buffer Overflow", "sard_prefix": "CWE121"},
-    122: {"name": "Heap Buffer Overflow", "sard_prefix": "CWE122"},
-    787: {"name": "Out-of-bounds Write", "sard_prefix": "CWE787"},
-    125: {"name": "Out-of-bounds Read", "sard_prefix": "CWE125"},
+    120: {"name": "Buffer Copy", "sard_prefix": "CWE120", "juliet_patterns": ["CWE121_*", "CWE122_*"]},
+    121: {"name": "Stack Buffer Overflow", "sard_prefix": "CWE121", "juliet_patterns": ["CWE121_*"]},
+    122: {"name": "Heap Buffer Overflow", "sard_prefix": "CWE122", "juliet_patterns": ["CWE122_*"]},
+    787: {"name": "Out-of-bounds Write", "sard_prefix": "CWE787", "juliet_patterns": ["CWE121_*", "CWE122_*", "CWE124_*"]},
+    125: {"name": "Out-of-bounds Read", "sard_prefix": "CWE125", "juliet_patterns": ["CWE126_*", "CWE127_*"]},
+    126: {"name": "Buffer Over-read", "sard_prefix": "CWE126", "juliet_patterns": ["CWE126_*"]},
+    127: {"name": "Buffer Under-read", "sard_prefix": "CWE127", "juliet_patterns": ["CWE127_*"]},
     # Injection
-    89: {"name": "SQL Injection", "sard_prefix": "CWE89"},
-    78: {"name": "Command Injection", "sard_prefix": "CWE78"},
-    79: {"name": "XSS", "sard_prefix": "CWE79"},
+    89: {"name": "SQL Injection", "sard_prefix": "CWE89", "juliet_patterns": ["CWE89_*"]},
+    78: {"name": "Command Injection", "sard_prefix": "CWE78", "juliet_patterns": ["CWE78_*"]},
+    79: {"name": "XSS", "sard_prefix": "CWE79", "juliet_patterns": ["CWE79_*"]},
     # Path traversal
-    22: {"name": "Path Traversal", "sard_prefix": "CWE22"},
+    22: {"name": "Path Traversal", "sard_prefix": "CWE22", "juliet_patterns": ["CWE22_*", "CWE23_*"]},
+    23: {"name": "Relative Path Traversal", "sard_prefix": "CWE23", "juliet_patterns": ["CWE23_*"]},
 }
 
 
@@ -304,8 +307,18 @@ class JulietExtractor:
     
     def find_cwe_samples(self, cwe_id: int) -> list[Path]:
         """Find samples for a CWE in Juliet directory."""
-        pattern = f"CWE{cwe_id}_*"
-        return list(self.juliet_dir.glob(f"**/{pattern}/**/*.c"))
+        config = CWE_CONFIGS.get(cwe_id)
+        if not config:
+            return []
+
+        # Use juliet_patterns if available, otherwise fall back to default pattern
+        patterns = config.get("juliet_patterns", [f"CWE{cwe_id}_*"])
+
+        samples = []
+        for pattern in patterns:
+            samples.extend(self.juliet_dir.glob(f"**/{pattern}/**/*.c"))
+
+        return samples
     
     def extract_cwe(self, cwe_id: int, limit: int = 100) -> DownloadResult:
         """Extract samples for a specific CWE."""
@@ -390,8 +403,8 @@ def main():
     parser.add_argument(
         "--juliet-dir",
         type=Path,
-        default=Path(__file__).parent / "juliet",
-        help="Path to Juliet test suite",
+        default=Path(__file__).parent.parent / "data" / "juliet_raw" / "C" / "testcases",
+        help="Path to Juliet test suite (default: data/juliet_raw/C/testcases)",
     )
     
     args = parser.parse_args()
