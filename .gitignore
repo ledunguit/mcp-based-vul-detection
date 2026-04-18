@@ -60,5 +60,5 @@ Thumbs.db
 # Logs
 *.log
 logs/
-data
-results/
+/data/
+/results/

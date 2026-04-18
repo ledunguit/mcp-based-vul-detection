@@ -1,10 +1,4 @@
-"""MCP-Vul: MCP-Based Vulnerability Detection MVP."""
-
-from src.schemas import (
-    Verdict,
-    AnalysisResult,
-    Evidence,
-)
+"""MCP-Vul active package: memory leak investigation control plane."""
 
 __version__ = "0.1.0"
-__all__ = ["Verdict", "AnalysisResult", "Evidence"]
+__all__ = ["__version__"]

@@ -8,8 +8,11 @@ Supports both direct in-process calls and stdio-based protocol communication.
 import json
 import asyncio
 import subprocess
+import threading
 from dataclasses import dataclass
 from typing import Any, Optional
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 import uuid
 
 from .base_server import MCPRequest, MCPResponse, MCPServer
@@ -57,6 +60,9 @@ class MCPClient:
         self.servers: dict[str, MCPServer] = {}
         self.tool_to_server: dict[str, str] = {}
         self.processes: dict[str, subprocess.Popen] = {}
+        self.process_locks: dict[str, threading.Lock] = {}
+        self.http_endpoints: dict[str, str] = {}
+        self.remote_server_tools: dict[str, list[dict]] = {}
         self.call_history: list[MCPToolCall] = []
     
     def register_server(self, name: str, server: MCPServer) -> None:
@@ -76,6 +82,7 @@ class MCPClient:
         name: str, 
         command: list[str],
         env: Optional[dict] = None,
+        cwd: Optional[str] = None,
     ) -> None:
         """
         Connect to an MCP server running as a subprocess.
@@ -91,16 +98,47 @@ class MCPClient:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
+            cwd=cwd,
             text=True,
+            bufsize=1,
         )
         self.processes[name] = proc
+        self.process_locks[name] = threading.Lock()
+
+        if self.protocol_mode:
+            self._initialize_remote_server(name)
+            self._refresh_remote_tools(name)
+
+    def connect_http(self, name: str, endpoint_url: str) -> None:
+        """
+        Connect to an MCP server exposed over HTTP.
+
+        Args:
+            name: Server name
+            endpoint_url: Full MCP endpoint URL, e.g. http://host:port/mcp
+        """
+        self.http_endpoints[name] = endpoint_url.rstrip("/")
+
+        if self.protocol_mode:
+            self._initialize_remote_server(name)
+            self._refresh_remote_tools(name)
     
     def list_tools(self) -> list[dict]:
         """List all available tools across all registered servers."""
         all_tools = []
         for server in self.servers.values():
             all_tools.extend(server.list_tools())
+        for tools in self.remote_server_tools.values():
+            all_tools.extend(tools)
         return all_tools
+
+    def has_tool(self, tool_name: str) -> bool:
+        """Return whether a tool is currently available."""
+        if tool_name in self.tool_to_server:
+            return True
+        if self.protocol_mode:
+            self._refresh_all_remote_tools()
+        return tool_name in self.tool_to_server
     
     def list_tools_for_llm(self) -> list[dict]:
         """
@@ -236,21 +274,154 @@ class MCPClient:
     
     def _call_protocol(self, tool_name: str, arguments: dict) -> Any:
         """Call tool via MCP protocol."""
-        # For now, fall back to direct call if not using subprocesses
         if tool_name in self.tool_to_server:
-            return self._call_direct(tool_name, arguments)
-        
-        # TODO: Implement subprocess protocol communication
-        raise NotImplementedError("Protocol mode with subprocesses not yet implemented")
+            server_name = self.tool_to_server[tool_name]
+            if server_name in self.servers:
+                return self._call_direct(tool_name, arguments)
+            if server_name in self.processes or server_name in self.http_endpoints:
+                result = self._protocol_request(
+                    server_name,
+                    "tools/call",
+                    {"name": tool_name, "arguments": arguments},
+                )
+                return self._extract_tool_result(result)
+
+        self._refresh_all_remote_tools()
+        if tool_name in self.tool_to_server:
+            return self._call_protocol(tool_name, arguments)
+
+        raise ValueError(f"Unknown tool: {tool_name}")
     
     async def _call_protocol_async(self, tool_name: str, arguments: dict) -> Any:
         """Call tool via MCP protocol asynchronously."""
-        # For now, fall back to direct call
-        if tool_name in self.tool_to_server:
-            return await self._call_direct_async(tool_name, arguments)
-        
-        # TODO: Implement subprocess protocol communication
-        raise NotImplementedError("Protocol mode with subprocesses not yet implemented")
+        return await asyncio.to_thread(self._call_protocol, tool_name, arguments)
+
+    def _initialize_remote_server(self, server_name: str) -> None:
+        try:
+            self._protocol_request(
+                server_name,
+                "initialize",
+                {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "mcp-vul",
+                        "version": "0.1.0",
+                    },
+                },
+            )
+        except Exception:
+            # Some legacy servers may not implement initialize; tolerate that.
+            return
+
+    def _refresh_remote_tools(self, server_name: str) -> None:
+        result = self._protocol_request(server_name, "tools/list", {})
+        tools = result.get("tools", [])
+        self.remote_server_tools[server_name] = tools
+        for tool in tools:
+            tool_name = tool.get("name")
+            if tool_name:
+                self.tool_to_server[tool_name] = server_name
+
+    def _refresh_all_remote_tools(self) -> None:
+        for server_name in list(self.processes) + list(self.http_endpoints):
+            self._refresh_remote_tools(server_name)
+
+    def _protocol_request(self, server_name: str, method: str, params: dict) -> Any:
+        if server_name in self.http_endpoints:
+            return self._protocol_request_http(server_name, method, params)
+        return self._protocol_request_stdio(server_name, method, params)
+
+    def _protocol_request_stdio(self, server_name: str, method: str, params: dict) -> Any:
+        if server_name not in self.processes:
+            raise ValueError(f"Unknown remote server: {server_name}")
+
+        proc = self.processes[server_name]
+        lock = self.process_locks[server_name]
+        if proc.stdin is None or proc.stdout is None:
+            raise RuntimeError(f"Server {server_name} is missing stdio pipes")
+
+        request = {
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": method,
+            "params": params,
+        }
+
+        with lock:
+            proc.stdin.write(json.dumps(request) + "\n")
+            proc.stdin.flush()
+
+            response_line = proc.stdout.readline()
+            if not response_line:
+                stderr_output = ""
+                if proc.stderr is not None:
+                    try:
+                        stderr_output = proc.stderr.read()
+                    except Exception:
+                        stderr_output = ""
+                raise RuntimeError(
+                    f"No response from server {server_name}. stderr: {stderr_output[:500]}"
+                )
+
+        response = json.loads(response_line)
+        if "error" in response and response["error"] is not None:
+            message = response["error"].get("message", "Unknown MCP protocol error")
+            raise RuntimeError(message)
+        return response.get("result", {})
+
+    def _protocol_request_http(self, server_name: str, method: str, params: dict) -> Any:
+        if server_name not in self.http_endpoints:
+            raise ValueError(f"Unknown HTTP server: {server_name}")
+
+        payload = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": str(uuid.uuid4()),
+                "method": method,
+                "params": params,
+            }
+        ).encode("utf-8")
+
+        req = urllib_request.Request(
+            self.http_endpoints[server_name],
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib_request.urlopen(req, timeout=30) as response:
+                raw_body = response.read().decode("utf-8")
+        except urllib_error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="ignore")
+            raise RuntimeError(
+                f"HTTP MCP request failed for {server_name}: {exc.code} {body[:500]}"
+            ) from exc
+        except urllib_error.URLError as exc:
+            raise RuntimeError(f"Failed to reach HTTP MCP server {server_name}: {exc}") from exc
+
+        if not raw_body:
+            return {}
+
+        response = json.loads(raw_body)
+        if "error" in response and response["error"] is not None:
+            message = response["error"].get("message", "Unknown MCP protocol error")
+            raise RuntimeError(message)
+        return response.get("result", {})
+
+    def _extract_tool_result(self, result: Any) -> Any:
+        if isinstance(result, dict):
+            content = result.get("content")
+            if isinstance(content, list) and content:
+                first = content[0]
+                if isinstance(first, dict) and first.get("type") == "text":
+                    text = first.get("text", "")
+                    try:
+                        return json.loads(text)
+                    except json.JSONDecodeError:
+                        return {"raw_text": text}
+        return result
     
     def get_call_history(self) -> list[MCPToolCall]:
         """Get the history of all tool calls."""
@@ -292,3 +463,6 @@ class MCPClient:
         for proc in self.processes.values():
             proc.terminate()
         self.processes.clear()
+        self.process_locks.clear()
+        self.http_endpoints.clear()
+        self.remote_server_tools.clear()

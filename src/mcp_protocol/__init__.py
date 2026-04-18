@@ -11,11 +11,9 @@ The implementation allows tools to be called either:
 
 from .base_server import MCPServer, MCPToolDefinition
 from .client import MCPClient
-from .registry import ToolRegistry
 
 __all__ = [
     "MCPServer",
-    "MCPToolDefinition", 
+    "MCPToolDefinition",
     "MCPClient",
-    "ToolRegistry",
 ]

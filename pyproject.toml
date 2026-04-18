@@ -1,7 +1,7 @@
 [project]
 name = "mcp-vul"
 version = "0.1.0"
-description = "MCP-Based Vulnerability Detection MVP for CWE-120"
+description = "Memory leak investigation control plane for MCP-based static/dynamic analyzers"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -26,7 +26,20 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = [
+    "tests/test_mcp_protocol.py",
+    "tests/test_memory_leak_app.py",
+    "tests/test_memory_leak_batch_runner.py",
+    "tests/test_memory_leak_control_plane.py",
+    "tests/test_memory_leak_judge.py",
+    "tests/test_memory_leak_reporting.py",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
+
+[project.scripts]
+mcp-vul-memory-scan = "src.memory_leak.control_plane:main"
+mcp-vul-memory-batch = "src.memory_leak.batch_runner:main"
+mcp-vul-memory-compare = "src.memory_leak.compare_snapshots:main"
+mcp-vul-memory-app = "src.memory_leak_app.server:main"

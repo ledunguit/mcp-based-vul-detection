@@ -1,4 +1,4 @@
-"""Configuration module for MCP-Vul."""
+"""Runtime configuration for the active memory leak control plane."""
 
 import os
 from pathlib import Path
@@ -31,14 +31,3 @@ CLANG_PATH = os.getenv("CLANG_PATH", "clang")
 # Analysis settings
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "4096"))
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.0"))  # Deterministic for reproducibility
-
-# CWE-120 specific settings
-TARGET_CWE = "CWE-120"
-RISKY_FUNCTIONS = [
-    "memcpy", "memmove", "memset",
-    "strcpy", "strncpy", "strcat", "strncat",
-    "sprintf", "snprintf", "vsprintf", "vsnprintf",
-    "gets", "fgets",
-    "scanf", "sscanf", "fscanf",
-    "read", "recv", "recvfrom",
-]

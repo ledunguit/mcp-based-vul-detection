@@ -2,6 +2,7 @@
 
 import pytest
 import asyncio
+import json
 from src.mcp_protocol.base_server import (
     MCPServer,
     MCPRequest,
@@ -10,7 +11,20 @@ from src.mcp_protocol.base_server import (
     ToolWrapper,
 )
 from src.mcp_protocol.client import MCPClient, MCPToolCall
-from src.mcp_protocol.registry import ToolRegistry, get_global_registry
+
+
+class _FakeHTTPResponse:
+    def __init__(self, payload: dict):
+        self._payload = json.dumps(payload).encode("utf-8")
+
+    def read(self) -> bytes:
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return None
 
 
 class TestMCPToolDefinition:
@@ -158,64 +172,74 @@ class TestMCPClient:
         assert "passthrough" in stats
         assert stats["passthrough"]["calls"] == 2
 
+    def test_connect_http_and_call_tool(self):
+        """Test calling a tool through an HTTP MCP endpoint."""
+        responses = [
+            {
+                "jsonrpc": "2.0",
+                "id": "init",
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {"listChanged": False}},
+                    "serverInfo": {"name": "test-http-mcp", "version": "0.1.0"},
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "list",
+                "result": {
+                    "tools": [
+                        {
+                            "name": "echo",
+                            "description": "Echo a value",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {"value": {"type": "string"}},
+                                "required": ["value"],
+                            },
+                        }
+                    ]
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "call",
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps({"echoed": "hello"})}]
+                },
+            },
+        ]
 
-class TestToolRegistry:
-    """Tests for ToolRegistry."""
-    
-    def test_register_legacy_tool(self):
-        """Test registering a legacy tool function."""
-        registry = ToolRegistry()
-        
-        def my_tool(data: str) -> str:
-            """Process data."""
-            return data.lower()
-        
-        registry.register_legacy_tool("my_tool", my_tool)
-        
-        assert "my_tool" in registry.list_tools()
-    
-    def test_create_client(self):
-        """Test creating a client from registry."""
-        registry = ToolRegistry()
-        registry.register_legacy_tool("test", lambda: "result")
-        
-        client = registry.create_client()
-        
-        assert len(client.list_tools()) >= 1
-    
-    def test_get_tools_for_llm(self):
-        """Test getting tools in LLM format."""
-        registry = ToolRegistry()
-        registry.register_legacy_tool(
-            "analyze", 
-            lambda code: {},
-            description="Analyze code",
-        )
-        
-        llm_tools = registry.get_tools_for_llm()
-        
-        assert len(llm_tools) >= 1
-        assert llm_tools[0]["type"] == "function"
-        assert "function" in llm_tools[0]
+        def fake_urlopen(req, timeout=30):  # noqa: ARG001
+            return _FakeHTTPResponse(responses.pop(0))
+
+        client = MCPClient(protocol_mode=True)
+
+        from src.mcp_protocol import client as client_module
+
+        original_urlopen = client_module.urllib_request.urlopen
+        client_module.urllib_request.urlopen = fake_urlopen
+        try:
+            client.connect_http("http-test", "http://test-server/mcp")
+
+            assert client.has_tool("echo")
+            result = client.call_tool("echo", {"value": "hello"})
+
+            assert result == {"echoed": "hello"}
+        finally:
+            client_module.urllib_request.urlopen = original_urlopen
 
 
 class TestIntegration:
     """Integration tests for MCP protocol."""
     
     def test_full_workflow(self):
-        """Test complete workflow from registry to tool call."""
-        # Create registry and register tool
-        registry = ToolRegistry()
-        registry.register_legacy_tool(
-            "count_chars",
-            lambda text: len(text),
-            description="Count characters in text",
-        )
-        
-        # Create client
-        client = registry.create_client()
-        
-        # Call tool
+        """Test complete workflow from direct server registration to tool call."""
+        client = MCPClient()
+        wrapper = ToolWrapper("test")
+        wrapper.wrap_function(lambda text: len(text), name="count_chars")
+        client.register_server("test", wrapper)
+
         result = client.call_tool("count_chars", {"text": "hello world"})
         
         assert result == 11
