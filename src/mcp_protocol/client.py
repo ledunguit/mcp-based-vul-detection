@@ -7,6 +7,8 @@ Supports both direct in-process calls and stdio-based protocol communication.
 
 import json
 import asyncio
+import os
+import socket
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -16,6 +18,12 @@ from urllib import request as urllib_request
 import uuid
 
 from .base_server import MCPRequest, MCPResponse, MCPServer
+
+DEFAULT_HTTP_TIMEOUT_SECONDS = float(os.environ.get("MCP_HTTP_TIMEOUT_SECONDS", "30"))
+LONG_RUNNING_HTTP_TIMEOUT_SECONDS = float(
+    os.environ.get("MCP_LONG_RUNNING_HTTP_TIMEOUT_SECONDS", "1800")
+)
+LONG_RUNNING_HTTP_TOOLS = frozenset({"memory.leakguard_run"})
 
 
 @dataclass
@@ -329,8 +337,20 @@ class MCPClient:
 
     def _protocol_request(self, server_name: str, method: str, params: dict) -> Any:
         if server_name in self.http_endpoints:
-            return self._protocol_request_http(server_name, method, params)
+            return self._protocol_request_http(
+                server_name,
+                method,
+                params,
+                timeout_seconds=self._http_timeout_for_request(method, params),
+            )
         return self._protocol_request_stdio(server_name, method, params)
+
+    def _http_timeout_for_request(self, method: str, params: dict) -> float:
+        if method == "tools/call":
+            tool_name = params.get("name")
+            if tool_name in LONG_RUNNING_HTTP_TOOLS:
+                return LONG_RUNNING_HTTP_TIMEOUT_SECONDS
+        return DEFAULT_HTTP_TIMEOUT_SECONDS
 
     def _protocol_request_stdio(self, server_name: str, method: str, params: dict) -> Any:
         if server_name not in self.processes:
@@ -370,7 +390,13 @@ class MCPClient:
             raise RuntimeError(message)
         return response.get("result", {})
 
-    def _protocol_request_http(self, server_name: str, method: str, params: dict) -> Any:
+    def _protocol_request_http(
+        self,
+        server_name: str,
+        method: str,
+        params: dict,
+        timeout_seconds: float,
+    ) -> Any:
         if server_name not in self.http_endpoints:
             raise ValueError(f"Unknown HTTP server: {server_name}")
 
@@ -391,8 +417,12 @@ class MCPClient:
         )
 
         try:
-            with urllib_request.urlopen(req, timeout=30) as response:
+            with urllib_request.urlopen(req, timeout=timeout_seconds) as response:
                 raw_body = response.read().decode("utf-8")
+        except (TimeoutError, socket.timeout) as exc:
+            raise RuntimeError(
+                f"HTTP MCP request timed out for {server_name} after {timeout_seconds:.0f}s"
+            ) from exc
         except urllib_error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="ignore")
             raise RuntimeError(

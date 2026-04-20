@@ -174,6 +174,7 @@ class TestMCPClient:
 
     def test_connect_http_and_call_tool(self):
         """Test calling a tool through an HTTP MCP endpoint."""
+        seen_timeouts = []
         responses = [
             {
                 "jsonrpc": "2.0",
@@ -211,6 +212,7 @@ class TestMCPClient:
         ]
 
         def fake_urlopen(req, timeout=30):  # noqa: ARG001
+            seen_timeouts.append(timeout)
             return _FakeHTTPResponse(responses.pop(0))
 
         client = MCPClient(protocol_mode=True)
@@ -226,6 +228,66 @@ class TestMCPClient:
             result = client.call_tool("echo", {"value": "hello"})
 
             assert result == {"echoed": "hello"}
+            assert seen_timeouts == [30, 30, 30]
+        finally:
+            client_module.urllib_request.urlopen = original_urlopen
+
+    def test_long_running_http_tool_uses_extended_timeout(self):
+        """Long-running HTTP tools should use a larger timeout budget."""
+        seen_timeouts = []
+        responses = [
+            {
+                "jsonrpc": "2.0",
+                "id": "init",
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {"listChanged": False}},
+                    "serverInfo": {"name": "test-http-mcp", "version": "0.1.0"},
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "list",
+                "result": {
+                    "tools": [
+                        {
+                            "name": "memory.leakguard_run",
+                            "description": "Run LeakGuard",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {},
+                            },
+                        }
+                    ]
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "call",
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps({"ok": True})}]
+                },
+            },
+        ]
+
+        def fake_urlopen(req, timeout=30):  # noqa: ARG001
+            seen_timeouts.append(timeout)
+            return _FakeHTTPResponse(responses.pop(0))
+
+        client = MCPClient(protocol_mode=True)
+
+        from src.mcp_protocol import client as client_module
+
+        original_urlopen = client_module.urllib_request.urlopen
+        client_module.urllib_request.urlopen = fake_urlopen
+        try:
+            client.connect_http("http-test", "http://test-server/mcp")
+
+            assert client.has_tool("memory.leakguard_run")
+            result = client.call_tool("memory.leakguard_run", {"project_path": "/tmp/project"})
+
+            assert result == {"ok": True}
+            assert seen_timeouts == [30, 30, 1800]
         finally:
             client_module.urllib_request.urlopen = original_urlopen
 

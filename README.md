@@ -51,6 +51,12 @@ Run the web application:
 mcp-vul-memory-app --host 127.0.0.1 --port 8090
 ```
 
+From the thesis workspace root, the same app can run inside Docker with:
+
+```bash
+docker compose --env-file .env.example -f docker-compose.thesis-demo.yml up --build memory-app
+```
+
 The app exposes:
 
 - `GET /`: workspace selection, progress timeline, and report viewer UI
@@ -66,6 +72,32 @@ Useful app environment variables:
 
 - `MEMORY_LEAK_APP_WORKSPACE_ROOTS`: allowed workspace roots separated by `:`
 - `MEMORY_LEAK_APP_ARTIFACT_DIR`: where scan events and reports are stored
+- `MCP_STATIC_SERVER_URL`: static MCP server URL
+- `MCP_DYNAMIC_SERVER_URL`: dynamic MCP server URL
+- `MEMORY_LEAK_JUDGE_MODE`: `heuristic` or `llm`
+- `MEMORY_LEAK_JUDGE_BATCH_SIZE`: number of leak bundles grouped into one LLM
+  judge request when `llm_assisted` mode is used
+- `MEMORY_LEAK_JUDGE_SCOPE`: `selective` to send only ambiguous bundles to the
+  LLM, or `all` to force legacy all-bundle judging
+- `MEMORY_LEAK_STATIC_EXPANSION_MODE`: `minimal`, `balanced`, or `full`
+- `MEMORY_LEAK_FILE_ANALYSIS_CONCURRENCY`: number of files analyzed in parallel
+  during lexical candidate discovery
+- `MEMORY_LEAK_STATIC_TOOL_CONCURRENCY`: number of static MCP tools called in
+  parallel for a candidate-bearing file
+
+App scan jobs now run in a dedicated worker process by default. This lets the UI
+cancel an in-flight orchestration run by terminating the worker process, while
+still keeping scan events and artifacts on disk. Remote analyzer containers may
+still need explicit server-side cancellation support if they spawn long-running
+tool subprocesses after the request has been sent.
+
+Failure responses and failed scan summaries include:
+
+- `error_code`
+- `error_category`
+- `error`
+- `remediation`
+- `error_detail`
 
 ## MCP Server Configuration
 

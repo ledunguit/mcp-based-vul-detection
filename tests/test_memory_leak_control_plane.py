@@ -304,6 +304,7 @@ def test_candidate_manager_merges_same_signature() -> None:
                     "start_line": 1,
                     "end_line": 4,
                     "has_allocation_without_local_free": True,
+                    "nonlocal_allocation_variables": [],
                 }
             ]
         },
@@ -354,6 +355,60 @@ def test_candidate_manager_merges_same_signature() -> None:
     assert "Also reported by valgrind.analyze_memcheck" in bundles[0].orchestrator_notes
     assert bundles[0].candidate.function == "demo"
     assert "possible_unfreed_allocation:buf@2" in bundles[0].candidate.path_constraints
+
+
+def test_candidate_manager_marks_global_allocation_without_local_free() -> None:
+    manager = CandidateManager("/tmp/repo")
+    manager.ingest_static_scan(
+        {
+            "file_path": "/tmp/repo/userfields.cc",
+            "candidates": [
+                {
+                    "candidate_id": "static-1",
+                    "signature": "/tmp/repo/userfields.cc:130:allocation",
+                    "summary": "Potential leak candidate discovered by lexical allocation scan",
+                    "tool": "memory.candidate_scan",
+                    "file": "/tmp/repo/userfields.cc",
+                    "line": 130,
+                    "allocation_site": {
+                        "file": "/tmp/repo/userfields.cc",
+                        "line": 130,
+                        "code_snippet": "userfields_requested = static_cast<int *>(xmalloc(...));",
+                    },
+                    "early_return_lines": [],
+                    "raw_evidence": {},
+                }
+            ],
+        },
+        function_summary_result={
+            "functions": [
+                {
+                    "function_name": "parse_userfields_arg",
+                    "start_line": 120,
+                    "end_line": 176,
+                    "has_allocation_without_local_free": True,
+                    "nonlocal_allocation_variables": [
+                        {"variable": "userfields_requested", "allocator": "xmalloc", "line": 130}
+                    ],
+                }
+            ]
+        },
+        path_constraints_result={
+            "functions": [
+                {
+                    "function_name": "parse_userfields_arg",
+                    "start_line": 120,
+                    "end_line": 176,
+                    "constraints": ["possible_unfreed_allocation:userfields_requested@130"],
+                }
+            ]
+        },
+    )
+
+    bundle = manager.list_bundles()[0]
+    assert "allocation_without_local_free" in bundle.candidate.tags
+    assert "global_allocation_without_local_free" in bundle.candidate.tags
+    assert "path_constraints" in bundle.candidate.tags
 
 
 def test_candidate_manager_merges_cross_tool_bundle_by_allocation_identity() -> None:
@@ -467,12 +522,12 @@ def test_control_plane_scans_repo_with_fake_client(tmp_path: Path) -> None:
     static_bundle = report["bundles"][0]
     tools = {evidence["tool"] for evidence in static_bundle["candidate"]["evidence"]}
     assert "memory.function_summary" in tools
-    assert "memory.call_graph" in tools
     assert "memory.path_constraints" in tools
     assert "memory.interprocedural_flow" in tools
-    assert "memory.call_path_summary" in tools
     assert "memory.leakguard_run" in tools
     assert "valgrind.analyze_memcheck" in tools
+    assert "memory.call_graph" not in tools
+    assert "memory.call_path_summary" not in tools
     assert static_bundle["candidate"]["primary_tool"] == "valgrind.analyze_memcheck"
     assert static_bundle["verdict"]["verdict"] == "confirmed_leak"
     assert static_bundle["task_state"] == "closed"
@@ -485,7 +540,9 @@ def test_control_plane_scans_repo_with_fake_client(tmp_path: Path) -> None:
     assert report["leakguard_tool"] == "memory.leakguard_run"
     assert report["scan_manifest"]["tool_policy"]["required"] == ["repo.index_files", "memory.candidate_scan"]
     assert report["scan_manifest"]["tool_policy"]["name"] == "memory-leak-investigation-policy/v1"
+    assert report["scan_manifest"]["tool_policy"]["static_expansion_mode"] == "balanced"
     assert "memory.interprocedural_flow" in report["scan_manifest"]["tool_policy"]["static_expansion"]
+    assert "memory.call_graph" not in report["scan_manifest"]["tool_policy"]["static_expansion"]
     assert report["tool_invocations"]
     assert any(invocation["tool"] == "memory.candidate_scan" for invocation in report["tool_invocations"])
     assert len(report["investigation_tasks"]) == 2

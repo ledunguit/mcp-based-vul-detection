@@ -270,7 +270,11 @@ class CandidateManager:
             ]
             + matched_constraints,
             tags=["static", "candidate_scan"]
-            + self._derive_static_tags(function_context, matched_constraints),
+            + self._derive_static_tags(
+                function_context,
+                matched_constraints,
+                candidate_line=raw_candidate.get("line"),
+            ),
             evidence=evidence,
         )
         return LeakBundle(
@@ -472,10 +476,16 @@ class CandidateManager:
         self,
         function_context: dict[str, Any] | None,
         matched_constraints: list[str],
+        candidate_line: int | None = None,
     ) -> list[str]:
         tags = []
         if function_context and function_context.get("has_allocation_without_local_free"):
             tags.append("allocation_without_local_free")
+        if function_context and candidate_line is not None and any(
+            item.get("line") == candidate_line
+            for item in function_context.get("nonlocal_allocation_variables", [])
+        ):
+            tags.append("global_allocation_without_local_free")
         if matched_constraints:
             tags.append("path_constraints")
         return tags

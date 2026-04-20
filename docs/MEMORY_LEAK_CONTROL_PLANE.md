@@ -175,12 +175,17 @@ The app provides:
 
 - workspace discovery from configured allowed roots
 - scan job creation
+- duplicate active scan protection per workspace
 - scan status lookup
 - progress and log streaming through Server-Sent Events
+- process-backed cancellation that can terminate the orchestration worker from
+  the app layer
 - persistent scan artifacts under `MEMORY_LEAK_APP_ARTIFACT_DIR`
 - JSON, Markdown, HTML, and snapshot report retrieval
 - a minimal browser UI for workspace selection, scan launch, live progress, and
   report viewing
+- structured failure payloads with `error_code`, `error_category`, and
+  `remediation`
 
 Run locally:
 
@@ -193,6 +198,20 @@ Recommended workspace-level script:
 ```bash
 ../scripts/run_memory_leak_app.sh
 ```
+
+Full Docker demo from the thesis workspace root:
+
+```bash
+docker compose --env-file .env.example -f docker-compose.thesis-demo.yml up --build
+```
+
+The Docker path mounts workspaces under `/workspace/demo`, stores app artifacts
+under `/workspace/results/app_scans`, and connects the app to the static and
+dynamic MCP services through the compose network.
+
+Current limitation: terminating the app worker stops the orchestrator itself,
+but long-running subprocesses launched inside remote analyzer servers still need
+explicit cancellation support in those servers if early teardown is required.
 
 Local development fallback variables for running servers directly from the workspace source tree:
 

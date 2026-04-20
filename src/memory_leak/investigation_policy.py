@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -52,6 +53,26 @@ class InvestigationTask:
 class InvestigationPolicy:
     """Select the next analyzer calls from current evidence and available tools."""
 
+    STATIC_EXPANSION_TOOL_SETS = {
+        "minimal": [
+            "memory.function_summary",
+            "memory.path_constraints",
+        ],
+        "balanced": [
+            "memory.function_summary",
+            "memory.path_constraints",
+            "memory.interprocedural_flow",
+        ],
+        "full": [
+            "memory.ast_scan",
+            "memory.function_summary",
+            "memory.call_graph",
+            "memory.path_constraints",
+            "memory.interprocedural_flow",
+            "memory.call_path_summary",
+        ],
+    }
+
     STATIC_EXPANSION_TOOLS = [
         "memory.ast_scan",
         "memory.function_summary",
@@ -70,8 +91,10 @@ class InvestigationPolicy:
         "memory.get_leak_bundles",
     ]
 
-    def __init__(self, available_tools: list[str]):
+    def __init__(self, available_tools: list[str], static_expansion_mode: str | None = None):
         self.available_tools = set(available_tools)
+        mode = (static_expansion_mode or os.getenv("MEMORY_LEAK_STATIC_EXPANSION_MODE", "balanced")).strip().lower()
+        self.static_expansion_mode = mode if mode in self.STATIC_EXPANSION_TOOL_SETS else "balanced"
 
     def file_task(self, file_path: str, scan_result: dict[str, Any]) -> InvestigationTask:
         candidate_count = scan_result.get("candidate_count", 0)
@@ -89,7 +112,7 @@ class InvestigationPolicy:
                 tool=tool,
                 reason="Candidate-bearing file needs static context expansion before judging.",
             )
-            for tool in self.STATIC_EXPANSION_TOOLS
+            for tool in self.STATIC_EXPANSION_TOOL_SETS[self.static_expansion_mode]
             if tool in self.available_tools
         ]
         return InvestigationTask(
@@ -131,8 +154,9 @@ class InvestigationPolicy:
             "required": [
                 tool for tool in ["repo.index_files", "memory.candidate_scan"] if tool in self.available_tools
             ],
+            "static_expansion_mode": self.static_expansion_mode,
             "static_expansion": [
-                tool for tool in self.STATIC_EXPANSION_TOOLS if tool in self.available_tools
+                tool for tool in self.STATIC_EXPANSION_TOOL_SETS[self.static_expansion_mode] if tool in self.available_tools
             ],
             "project_static": [
                 tool for tool in self.PROJECT_STATIC_TOOLS if tool in self.available_tools
@@ -143,6 +167,7 @@ class InvestigationPolicy:
             "rules": [
                 "Run lexical candidate scan for indexed C/C++ files.",
                 "Only expand per-file static context when candidates are found.",
+                "Default to balanced static expansion unless overridden for benchmarking.",
                 "Use LeakGuard project-level evidence when available.",
                 "Merge provided dynamic run bundles before final judging.",
                 "Judge only after static expansion and available dynamic evidence are merged.",

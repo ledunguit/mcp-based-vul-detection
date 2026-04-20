@@ -62,3 +62,5 @@ Thumbs.db
 logs/
 /data/
 /results/
+frontend/node_modules/
+frontend/dist/

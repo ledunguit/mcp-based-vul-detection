@@ -18,16 +18,49 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "# Memory Leak Investigation Report",
         "",
         f"- Repository: `{report.get('repo_path', 'unknown')}`",
+        f"- Analysis mode: `{report.get('analysis_mode', 'unknown')}`",
+        f"- Orchestration mode: `{report.get('orchestration_mode', 'deterministic_policy')}`",
         f"- Indexed files: {report.get('indexed_file_count', 0)}",
         f"- Scanned files: {report.get('scanned_file_count', 0)}",
         f"- Candidate source files: {report.get('candidate_source_file_count', 0)}",
+        f"- Static expansion mode: `{report.get('static_expansion_mode', 'balanced')}`",
+        f"- File analysis concurrency: {report.get('file_analysis_concurrency', 1)}",
+        f"- Static tool concurrency: {report.get('static_tool_concurrency', 1)}",
         f"- Bundles: {report.get('bundle_count', len(bundles))}",
         f"- Evidence items: {report.get('evidence_count', 0)}",
         f"- Tool invocations: {len(report.get('tool_invocations', []))}",
         "",
-        "## Verdict Summary",
-        "",
     ]
+    judge_summary = report.get("judge_summary") or {}
+    if judge_summary:
+        lines.extend(
+            [
+                "## Judge Summary",
+                "",
+                f"- Requested judge mode: `{judge_summary.get('requested_mode', 'unknown')}`",
+                f"- Effective judge mode: `{judge_summary.get('effective_mode', 'unknown')}`",
+                f"- LLM used: `{judge_summary.get('llm_used', False)}`",
+                f"- LLM success count: {judge_summary.get('llm_success_count', 0)}",
+                f"- Heuristic fallback count: {judge_summary.get('heuristic_fallback_count', 0)}",
+                f"- LLM skipped count: {judge_summary.get('llm_skipped_count', 0)}",
+            ]
+        )
+        if judge_summary.get("provider"):
+            lines.append(f"- LLM provider: `{judge_summary['provider']}`")
+        if judge_summary.get("judge_scope"):
+            lines.append(f"- Judge scope: `{judge_summary['judge_scope']}`")
+        if judge_summary.get("judge_batch_size"):
+            lines.append(f"- Judge batch size: {judge_summary['judge_batch_size']}")
+        if judge_summary.get("last_llm_error"):
+            lines.append(f"- Last LLM error: {judge_summary['last_llm_error']}")
+        lines.append("")
+
+    lines.extend(
+        [
+            "## Verdict Summary",
+            "",
+        ]
+    )
 
     if verdict_counts:
         for verdict, count in sorted(verdict_counts.items()):
@@ -103,6 +136,8 @@ def render_markdown_report(report: dict[str, Any]) -> str:
                 target = _format_location(suggestion.get("target_location"))
                 if target != "unknown":
                     lines.append(f"- Target: {target}")
+                if suggestion.get("unified_diff"):
+                    lines.extend(["```diff", suggestion["unified_diff"], "```"])
         else:
             lines.append("- No fix suggestion was produced.")
 
@@ -177,6 +212,13 @@ def build_result_snapshot(report: dict[str, Any], mode: str = "orchestrated") ->
         "schema_version": "memory-leak-snapshot/v1",
         "mode": mode,
         "repo_path": report.get("repo_path"),
+        "analysis_mode": report.get("analysis_mode"),
+        "orchestration_mode": report.get("orchestration_mode"),
+        "static_expansion_mode": report.get("static_expansion_mode"),
+        "file_analysis_concurrency": report.get("file_analysis_concurrency"),
+        "static_tool_concurrency": report.get("static_tool_concurrency"),
+        "judge_summary": report.get("judge_summary"),
+        "performance_summary": report.get("performance_summary"),
         "bundle_count": report.get("bundle_count", len(bundles)),
         "candidate_count": report.get("candidate_count", len(bundles)),
         "evidence_count": report.get("evidence_count", 0),

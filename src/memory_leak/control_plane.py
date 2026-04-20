@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable, Iterable
 
 from src.mcp_protocol.remote_bridge import build_remote_client_from_env
@@ -21,6 +24,9 @@ class MemoryLeakControlPlane:
     def __init__(self, mcp_client: Any | None = None, judge: MemoryLeakJudge | None = None):
         self.mcp_client = mcp_client or build_remote_client_from_env()
         self.judge = judge or MemoryLeakJudge()
+        self.file_analysis_concurrency = max(1, int(os.getenv("MEMORY_LEAK_FILE_ANALYSIS_CONCURRENCY", "4")))
+        self.static_tool_concurrency = max(1, int(os.getenv("MEMORY_LEAK_STATIC_TOOL_CONCURRENCY", "3")))
+        self._tool_invocation_lock = Lock()
 
     def scan_repo(
         self,
@@ -59,27 +65,17 @@ class MemoryLeakControlPlane:
             message=f"Scanning {index_result.get('count', 0)} indexed files",
             indexed_file_count=index_result.get("count", 0),
         )
+        file_analyses = self._analyze_files(
+            files=index_result.get("files", []),
+            policy=policy,
+            tool_invocations=tool_invocations,
+            progress_callback=progress_callback,
+        )
         scanned_files = 0
         candidate_source_files = 0
-        for file_path in index_result.get("files", []):
-            source_code = Path(file_path).read_text(errors="ignore")
-            scan_result = self._call_tool_traced(
-                tool_invocations,
-                "memory.candidate_scan",
-                {"source_code": source_code, "file_path": file_path},
-                reason="Discover lexical memory allocation/free imbalance candidates.",
-                subject=file_path,
-                progress_callback=progress_callback,
-            )
+        for analysis in file_analyses:
             scanned_files += 1
-
-            ast_result = None
-            function_summary_result = None
-            call_graph_result = None
-            path_constraints_result = None
-            interprocedural_flow_result = None
-            call_path_summary_result = None
-            task = policy.file_task(file_path, scan_result)
+            task = analysis["task"]
             investigation_tasks.append(task)
             self._emit(
                 progress_callback,
@@ -88,37 +84,17 @@ class MemoryLeakControlPlane:
                 task=task.to_report(),
                 scanned_files=scanned_files,
             )
-            if task.candidate_count > 0:
-                self._emit(
-                    progress_callback,
-                    "phase_started",
-                    phase="static_analysis",
-                    message=f"Expanding static context for {file_path}",
-                    file_path=file_path,
-                )
-                expanded = self._run_static_expansion(
-                    tool_invocations=tool_invocations,
-                    decisions=task.decisions,
-                    source_code=source_code,
-                    file_path=file_path,
-                    progress_callback=progress_callback,
-                )
-                ast_result = expanded.get("memory.ast_scan")
-                function_summary_result = expanded.get("memory.function_summary")
-                call_graph_result = expanded.get("memory.call_graph")
-                path_constraints_result = expanded.get("memory.path_constraints")
-                interprocedural_flow_result = expanded.get("memory.interprocedural_flow")
-                call_path_summary_result = expanded.get("memory.call_path_summary")
+            if analysis["candidate_source_file"]:
                 candidate_source_files += 1
 
             manager.ingest_static_scan(
-                scan_result,
-                ast_result=ast_result,
-                function_summary_result=function_summary_result,
-                call_graph_result=call_graph_result,
-                path_constraints_result=path_constraints_result,
-                interprocedural_flow_result=interprocedural_flow_result,
-                call_path_summary_result=call_path_summary_result,
+                analysis["scan_result"],
+                ast_result=analysis["expanded"].get("memory.ast_scan"),
+                function_summary_result=analysis["expanded"].get("memory.function_summary"),
+                call_graph_result=analysis["expanded"].get("memory.call_graph"),
+                path_constraints_result=analysis["expanded"].get("memory.path_constraints"),
+                interprocedural_flow_result=analysis["expanded"].get("memory.interprocedural_flow"),
+                call_path_summary_result=analysis["expanded"].get("memory.call_path_summary"),
             )
 
         dynamic_run_ids = list(dynamic_run_ids or [])
@@ -178,9 +154,16 @@ class MemoryLeakControlPlane:
         report["build_command"] = build_command
         report["leakguard_run"] = leakguard_result
         report["leakguard_tool"] = leakguard_tool
+        report["static_expansion_mode"] = policy.static_expansion_mode
+        report["file_analysis_concurrency"] = self.file_analysis_concurrency
+        report["static_tool_concurrency"] = self.static_tool_concurrency
         report["available_tools"] = available_tools
         report["tool_invocations"] = tool_invocations
+        report["performance_summary"] = self._build_performance_summary(tool_invocations)
         report["investigation_tasks"] = [task.to_report() for task in investigation_tasks]
+        judge_summary = getattr(self.judge, "summary", None)
+        if callable(judge_summary):
+            report["judge_summary"] = judge_summary()
         report["scan_manifest"] = self._build_scan_manifest(
             repo_root=repo_root,
             file_limit=file_limit,
@@ -216,17 +199,112 @@ class MemoryLeakControlPlane:
         file_path: str,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, dict[str, Any]]:
+        if not decisions:
+            return {}
+        if self.static_tool_concurrency <= 1 or len(decisions) <= 1:
+            results = {}
+            for decision in decisions:
+                results[decision.tool] = self._call_tool_traced(
+                    tool_invocations,
+                    decision.tool,
+                    {"source_code": source_code, "file_path": file_path},
+                    reason=decision.reason,
+                    subject=file_path,
+                    progress_callback=progress_callback,
+                )
+            return results
+
         results = {}
-        for decision in decisions:
-            results[decision.tool] = self._call_tool_traced(
-                tool_invocations,
-                decision.tool,
-                {"source_code": source_code, "file_path": file_path},
-                reason=decision.reason,
-                subject=file_path,
+        with ThreadPoolExecutor(max_workers=min(self.static_tool_concurrency, len(decisions))) as executor:
+            future_map = {
+                executor.submit(
+                    self._call_tool_traced,
+                    tool_invocations,
+                    decision.tool,
+                    {"source_code": source_code, "file_path": file_path},
+                    decision.reason,
+                    file_path,
+                    progress_callback,
+                ): decision.tool
+                for decision in decisions
+            }
+            for future in as_completed(future_map):
+                results[future_map[future]] = future.result()
+        return results
+
+    def _analyze_files(
+        self,
+        files: list[str],
+        policy: InvestigationPolicy,
+        tool_invocations: list[dict[str, Any]],
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> list[dict[str, Any]]:
+        if self.file_analysis_concurrency <= 1 or len(files) <= 1:
+            return [
+                self._analyze_file(index, file_path, policy, tool_invocations, progress_callback)
+                for index, file_path in enumerate(files)
+            ]
+
+        analyses: list[dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=min(self.file_analysis_concurrency, len(files))) as executor:
+            future_map = {
+                executor.submit(
+                    self._analyze_file,
+                    index,
+                    file_path,
+                    policy,
+                    tool_invocations,
+                    progress_callback,
+                ): index
+                for index, file_path in enumerate(files)
+            }
+            for future in as_completed(future_map):
+                analyses.append(future.result())
+        analyses.sort(key=lambda item: item["index"])
+        return analyses
+
+    def _analyze_file(
+        self,
+        index: int,
+        file_path: str,
+        policy: InvestigationPolicy,
+        tool_invocations: list[dict[str, Any]],
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        source_code = Path(file_path).read_text(errors="ignore")
+        scan_result = self._call_tool_traced(
+            tool_invocations,
+            "memory.candidate_scan",
+            {"source_code": source_code, "file_path": file_path},
+            reason="Discover lexical memory allocation/free imbalance candidates.",
+            subject=file_path,
+            progress_callback=progress_callback,
+        )
+        task = policy.file_task(file_path, scan_result)
+        expanded: dict[str, dict[str, Any]] = {}
+        if task.candidate_count > 0:
+            self._emit(
+                progress_callback,
+                "phase_started",
+                phase="static_analysis",
+                message=f"Expanding static context for {file_path}",
+                file_path=file_path,
+            )
+            expanded = self._run_static_expansion(
+                tool_invocations=tool_invocations,
+                decisions=task.decisions,
+                source_code=source_code,
+                file_path=file_path,
                 progress_callback=progress_callback,
             )
-        return results
+        return {
+            "index": index,
+            "file_path": file_path,
+            "scan_result": scan_result,
+            "task": task,
+            "expanded": expanded,
+            "candidate_source_file": task.candidate_count > 0,
+        }
 
     def _call_tool_traced(
         self,
@@ -262,7 +340,8 @@ class MemoryLeakControlPlane:
                 "error": error,
                 "duration_ms": round((time.perf_counter() - started) * 1000, 3),
             }
-            tool_invocations.append(invocation)
+            with self._tool_invocation_lock:
+                tool_invocations.append(invocation)
             self._emit(progress_callback, "tool_completed", **invocation)
 
     def _emit(
@@ -274,6 +353,42 @@ class MemoryLeakControlPlane:
         if progress_callback is None:
             return
         progress_callback({"type": event_type, **payload})
+
+    def _build_performance_summary(self, tool_invocations: list[dict[str, Any]]) -> dict[str, Any]:
+        per_tool: dict[str, dict[str, Any]] = {}
+        total_duration_ms = 0.0
+        for invocation in tool_invocations:
+            tool_name = invocation["tool"]
+            duration_ms = float(invocation.get("duration_ms") or 0.0)
+            total_duration_ms += duration_ms
+            stats = per_tool.setdefault(
+                tool_name,
+                {
+                    "calls": 0,
+                    "total_duration_ms": 0.0,
+                    "max_duration_ms": 0.0,
+                    "error_count": 0,
+                },
+            )
+            stats["calls"] += 1
+            stats["total_duration_ms"] += duration_ms
+            stats["max_duration_ms"] = max(stats["max_duration_ms"], duration_ms)
+            if invocation.get("status") != "ok":
+                stats["error_count"] += 1
+
+        for stats in per_tool.values():
+            calls = stats["calls"] or 1
+            stats["avg_duration_ms"] = round(stats["total_duration_ms"] / calls, 3)
+            stats["total_duration_ms"] = round(stats["total_duration_ms"], 3)
+            stats["max_duration_ms"] = round(stats["max_duration_ms"], 3)
+
+        return {
+            "total_tool_duration_ms": round(total_duration_ms, 3),
+            "tool_count": len(tool_invocations),
+            "file_analysis_concurrency": self.file_analysis_concurrency,
+            "static_tool_concurrency": self.static_tool_concurrency,
+            "per_tool": dict(sorted(per_tool.items())),
+        }
 
     def _build_scan_manifest(
         self,
