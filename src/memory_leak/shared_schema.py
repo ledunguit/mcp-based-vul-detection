@@ -18,6 +18,10 @@ def _ensure_common_schema_importable() -> None:
 _ensure_common_schema_importable()
 
 from mcp_memory_common.leak_schema import (  # noqa: E402
+    AllocationRecord,
+    CleanupObligation,
+    CleanupRecord,
+    FalsePositiveHint,
     InvestigationVerdict,
     LeakBundle,
     LeakCandidate,
@@ -27,11 +31,18 @@ from mcp_memory_common.leak_schema import (  # noqa: E402
     LeakPath,
     LeakSeverity,
     LeakSuggestion,
+    MissingCleanupPath,
+    OwnershipSummary,
+    OwnershipTransfer,
     ToolKind,
     VerdictResult,
 )
 
 __all__ = [
+    "AllocationRecord",
+    "CleanupObligation",
+    "CleanupRecord",
+    "FalsePositiveHint",
     "InvestigationVerdict",
     "LeakBundle",
     "LeakCandidate",
@@ -41,6 +52,9 @@ __all__ = [
     "LeakPath",
     "LeakSeverity",
     "LeakSuggestion",
+    "MissingCleanupPath",
+    "OwnershipSummary",
+    "OwnershipTransfer",
     "ToolKind",
     "VerdictResult",
 ]

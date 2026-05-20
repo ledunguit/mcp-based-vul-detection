@@ -15,17 +15,6 @@ import {
 
 const TERMINAL_STATES = ['completed', 'failed', 'cancelled'];
 
-function detectInitialTheme() {
-  if (typeof window === 'undefined') {
-    return 'dark';
-  }
-  const saved = window.localStorage.getItem('memory-leak-ui-theme');
-  if (saved === 'light' || saved === 'dark') {
-    return saved;
-  }
-  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-}
-
 function formatFailure(payload) {
   if (!payload) {
     return { text: '', hint: '' };
@@ -42,7 +31,6 @@ function formatFailure(payload) {
 }
 
 export function useMemoryLeakConsole({ onCompleted } = {}) {
-  const [theme, setTheme] = useState(detectInitialTheme);
   const [workspaces, setWorkspaces] = useState([]);
   const [allowedRoots, setAllowedRoots] = useState([]);
   const [workspacePath, setWorkspacePath] = useState('');
@@ -51,6 +39,11 @@ export function useMemoryLeakConsole({ onCompleted } = {}) {
   const [analysisMode, setAnalysisMode] = useState('no_llm');
   const [fileLimit, setFileLimit] = useState('500');
   const [dynamicRunIds, setDynamicRunIds] = useState('');
+  const [dynamicMode, setDynamicMode] = useState('selective');
+  const [dynamicBinaryPath, setDynamicBinaryPath] = useState('');
+  const [dynamicArgs, setDynamicArgs] = useState('');
+  const [dynamicTimeoutSec, setDynamicTimeoutSec] = useState('120');
+  const [dynamicToolPreference, setDynamicToolPreference] = useState('auto');
   const [recentScans, setRecentScans] = useState([]);
   const [selectedScan, setSelectedScan] = useState(null);
   const [events, setEvents] = useState([]);
@@ -212,11 +205,6 @@ export function useMemoryLeakConsole({ onCompleted } = {}) {
   });
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-    window.localStorage.setItem('memory-leak-ui-theme', theme);
-  }, [theme]);
-
-  useEffect(() => {
     let cancelled = false;
 
     async function bootstrap() {
@@ -244,7 +232,7 @@ export function useMemoryLeakConsole({ onCompleted } = {}) {
     return () => {
       cancelled = true;
     };
-  }, [loadRecentScans, showError]);
+  }, []);
 
   useEffect(() => {
     if (!selectedScan?.scan_id || TERMINAL_STATES.includes(selectedScan.status)) {
@@ -261,7 +249,7 @@ export function useMemoryLeakConsole({ onCompleted } = {}) {
     return () => {
       eventSource.close();
     };
-  }, [handleStreamEvent, selectedScan?.scan_id, selectedScan?.status, showError]);
+  }, [selectedScan?.scan_id, selectedScan?.status]);
 
   useEffect(() => {
     if (!terminalRef.current) {
@@ -277,6 +265,11 @@ export function useMemoryLeakConsole({ onCompleted } = {}) {
       file_limit: Number(fileLimit || 500),
       analysis_mode: analysisMode,
       build_command: buildCommand.trim() || null,
+      dynamic_mode: dynamicMode,
+      dynamic_binary_path: dynamicBinaryPath.trim() || null,
+      dynamic_args: dynamicArgs.trim() || null,
+      dynamic_timeout_sec: dynamicTimeoutSec.trim() ? Number(dynamicTimeoutSec) : null,
+      dynamic_tool_preference: dynamicToolPreference === 'auto' ? null : dynamicToolPreference,
       dynamic_run_ids: dynamicRunIds
         .split(',')
         .map((item) => item.trim())
@@ -398,8 +391,6 @@ export function useMemoryLeakConsole({ onCompleted } = {}) {
   }
 
   return {
-    theme,
-    setTheme,
     workspaces,
     allowedRoots,
     workspacePath,
@@ -414,6 +405,16 @@ export function useMemoryLeakConsole({ onCompleted } = {}) {
     setFileLimit,
     dynamicRunIds,
     setDynamicRunIds,
+    dynamicMode,
+    setDynamicMode,
+    dynamicBinaryPath,
+    setDynamicBinaryPath,
+    dynamicArgs,
+    setDynamicArgs,
+    dynamicTimeoutSec,
+    setDynamicTimeoutSec,
+    dynamicToolPreference,
+    setDynamicToolPreference,
     recentScans,
     selectedScan,
     setSelectedScan,

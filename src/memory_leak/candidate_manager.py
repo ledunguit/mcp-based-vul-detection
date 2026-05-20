@@ -12,6 +12,8 @@ from .shared_schema import (
     LeakEvidence,
     LeakLocation,
     LeakSeverity,
+    MissingCleanupPath,
+    OwnershipSummary,
     ToolKind,
 )
 
@@ -28,6 +30,8 @@ class CandidateManager:
         scan_result: dict[str, Any],
         ast_result: dict[str, Any] | None = None,
         function_summary_result: dict[str, Any] | None = None,
+        ownership_summary_result: dict[str, Any] | None = None,
+        ownership_conventions_result: dict[str, Any] | None = None,
         call_graph_result: dict[str, Any] | None = None,
         path_constraints_result: dict[str, Any] | None = None,
         interprocedural_flow_result: dict[str, Any] | None = None,
@@ -40,6 +44,8 @@ class CandidateManager:
             for evidence in [
                 self._build_ast_evidence(ast_result, file_path),
                 self._build_function_summary_evidence(function_summary_result, file_path),
+                self._build_ownership_summary_evidence(ownership_summary_result, file_path),
+                self._build_ownership_conventions_evidence(ownership_conventions_result, file_path),
                 self._build_call_graph_evidence(call_graph_result, file_path),
                 self._build_path_constraints_evidence(path_constraints_result, file_path),
                 self._build_interprocedural_flow_evidence(interprocedural_flow_result, file_path),
@@ -53,6 +59,7 @@ class CandidateManager:
                 raw_candidate,
                 shared_evidence,
                 function_summary_result=function_summary_result,
+                ownership_summary_result=ownership_summary_result,
                 path_constraints_result=path_constraints_result,
             )
             merged = self._upsert_bundle(bundle)
@@ -217,6 +224,7 @@ class CandidateManager:
         raw_candidate: dict[str, Any],
         shared_evidence: list[LeakEvidence],
         function_summary_result: dict[str, Any] | None = None,
+        ownership_summary_result: dict[str, Any] | None = None,
         path_constraints_result: dict[str, Any] | None = None,
     ) -> LeakBundle:
         allocation_site = LeakLocation.model_validate(raw_candidate.get("allocation_site", {}))
@@ -227,6 +235,10 @@ class CandidateManager:
         matched_constraints = self._match_path_constraints(
             raw_candidate.get("line"),
             path_constraints_result,
+        )
+        matched_ownership = self._match_ownership_summary(
+            raw_candidate.get("line"),
+            ownership_summary_result,
         )
         function_name = raw_candidate.get("function")
         if function_context and function_context.get("function_name"):
@@ -274,7 +286,14 @@ class CandidateManager:
                 function_context,
                 matched_constraints,
                 candidate_line=raw_candidate.get("line"),
+                ownership_summary=matched_ownership,
             ),
+            allocation_records=matched_ownership.get("allocations", []) if matched_ownership else [],
+            cleanup_records=matched_ownership.get("cleanups", []) if matched_ownership else [],
+            ownership_transfers=matched_ownership.get("transfers", []) if matched_ownership else [],
+            cleanup_obligations=matched_ownership.get("cleanup_obligations", []) if matched_ownership else [],
+            missing_cleanup_paths=matched_ownership.get("missing_cleanup_paths", []) if matched_ownership else [],
+            false_positive_hints=matched_ownership.get("false_positive_hints", []) if matched_ownership else [],
             evidence=evidence,
         )
         return LeakBundle(
@@ -346,6 +365,78 @@ class CandidateManager:
                 "risky_functions": risky_functions,
                 "functions": functions,
             },
+        )
+
+    def _build_ownership_summary_evidence(
+        self,
+        ownership_summary_result: dict[str, Any] | None,
+        file_path: str | None,
+    ) -> LeakEvidence | None:
+        if not ownership_summary_result or ownership_summary_result.get("parse_error"):
+            return None
+
+        functions = ownership_summary_result.get("functions", [])
+        missing_paths = [
+            path
+            for function in functions
+            for path in function.get("missing_cleanup_paths", [])
+        ]
+        cleanup_obligations = [
+            obligation
+            for function in functions
+            for obligation in function.get("cleanup_obligations", [])
+        ]
+        ownership_summaries = [
+            OwnershipSummary(
+                function=function.get("function_name"),
+                allocations=function.get("allocations", []),
+                cleanups=function.get("cleanups", []),
+                transfers=function.get("transfers", []),
+                cleanup_obligations=function.get("cleanup_obligations", []),
+                missing_cleanup_paths=function.get("missing_cleanup_paths", []),
+                false_positive_hints=function.get("false_positive_hints", []),
+            )
+            for function in functions
+        ]
+        return LeakEvidence(
+            tool="memory.ownership_summary",
+            tool_kind=ToolKind.STATIC,
+            kind="ownership_summary",
+            message=(
+                f"Ownership summary found {len(cleanup_obligations)} cleanup obligation(s) "
+                f"and {len(missing_paths)} missing cleanup path(s)"
+            ),
+            confidence=LeakConfidence.HIGH if missing_paths else LeakConfidence.MEDIUM,
+            severity=LeakSeverity.MEDIUM if missing_paths else LeakSeverity.INFO,
+            location=LeakLocation(file=file_path),
+            cleanup_obligations=cleanup_obligations,
+            missing_cleanup_paths=[MissingCleanupPath.model_validate(path) for path in missing_paths],
+            ownership_summaries=ownership_summaries,
+            raw_evidence=ownership_summary_result,
+        )
+
+    def _build_ownership_conventions_evidence(
+        self,
+        ownership_conventions_result: dict[str, Any] | None,
+        file_path: str | None,
+    ) -> LeakEvidence | None:
+        if not ownership_conventions_result or ownership_conventions_result.get("parse_error"):
+            return None
+
+        allocator_like = ownership_conventions_result.get("allocator_like", [])
+        deallocator_like = ownership_conventions_result.get("deallocator_like", [])
+        return LeakEvidence(
+            tool="memory.ownership_conventions",
+            tool_kind=ToolKind.STATIC,
+            kind="ownership_conventions",
+            message=(
+                f"Ownership conventions detected {len(allocator_like)} allocator-like and "
+                f"{len(deallocator_like)} deallocator-like function(s)"
+            ),
+            confidence=LeakConfidence.MEDIUM,
+            severity=LeakSeverity.INFO,
+            location=LeakLocation(file=file_path),
+            raw_evidence=ownership_conventions_result,
         )
 
     def _build_call_graph_evidence(
@@ -472,11 +563,28 @@ class CandidateManager:
             matched.extend(function.get("constraints", []))
         return matched
 
+    def _match_ownership_summary(
+        self,
+        line: int | None,
+        ownership_summary_result: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if line is None or not ownership_summary_result:
+            return None
+        for function in ownership_summary_result.get("functions", []):
+            start_line = function.get("start_line")
+            end_line = function.get("end_line")
+            if start_line is None or end_line is None:
+                continue
+            if start_line <= line <= end_line:
+                return function
+        return None
+
     def _derive_static_tags(
         self,
         function_context: dict[str, Any] | None,
         matched_constraints: list[str],
         candidate_line: int | None = None,
+        ownership_summary: dict[str, Any] | None = None,
     ) -> list[str]:
         tags = []
         if function_context and function_context.get("has_allocation_without_local_free"):
@@ -488,6 +596,12 @@ class CandidateManager:
             tags.append("global_allocation_without_local_free")
         if matched_constraints:
             tags.append("path_constraints")
+        if ownership_summary and ownership_summary.get("cleanup_obligations"):
+            tags.append("cleanup_obligation")
+        if ownership_summary and ownership_summary.get("missing_cleanup_paths"):
+            tags.append("missing_cleanup_path")
+        if ownership_summary and ownership_summary.get("false_positive_hints"):
+            tags.append("ownership_false_positive_hints")
         return tags
 
     def _find_similar_bundle(self, incoming: LeakBundle) -> LeakBundle | None:
@@ -502,11 +616,20 @@ class CandidateManager:
         if not self._same_file_identity(left_file, right_file):
             return False
 
+        if self._same_signature_stem(left.candidate.signature, right.candidate.signature):
+            return True
+
         left_line = self._bundle_identity_line(left)
         right_line = self._bundle_identity_line(right)
-        if left_line is not None and right_line is not None and abs(left_line - right_line) > 1:
-            return False
-        return True
+        if left_line is not None and right_line is not None:
+            line_delta = abs(left_line - right_line)
+            if line_delta <= 3:
+                return True
+            if line_delta <= 15 and self._same_function_identity(left, right):
+                return True
+            return self._allocation_context_overlap(left, right)
+
+        return self._same_function_identity(left, right) or self._allocation_context_overlap(left, right)
 
     def _bundle_file(self, bundle: LeakBundle) -> str | None:
         allocation_site = bundle.candidate.allocation_site
@@ -540,6 +663,47 @@ class CandidateManager:
             return left_path.name == right_path.name and left_parts[-2:] == right_parts[-2:]
 
         return left_path.name == right_path.name
+
+    def _same_signature_stem(self, left_signature: str | None, right_signature: str | None) -> bool:
+        if not left_signature or not right_signature:
+            return False
+        left_stem = self._signature_stem(left_signature)
+        right_stem = self._signature_stem(right_signature)
+        return bool(left_stem and right_stem and left_stem == right_stem)
+
+    def _signature_stem(self, signature: str) -> str:
+        parts = signature.split(":")
+        if len(parts) < 3:
+            return signature
+        return ":".join([parts[0], parts[-1]])
+
+    def _same_function_identity(self, left: LeakBundle, right: LeakBundle) -> bool:
+        left_function = (left.candidate.function or "").strip()
+        right_function = (right.candidate.function or "").strip()
+        return bool(left_function and right_function and left_function == right_function)
+
+    def _allocation_context_overlap(self, left: LeakBundle, right: LeakBundle) -> bool:
+        left_context = self._allocation_context_tokens(left)
+        right_context = self._allocation_context_tokens(right)
+        return bool(left_context and right_context and left_context.intersection(right_context))
+
+    def _allocation_context_tokens(self, bundle: LeakBundle) -> set[str]:
+        tokens: set[str] = set()
+        allocation_site = bundle.candidate.allocation_site
+        if allocation_site and allocation_site.code_snippet:
+            tokens.update(self._extract_identifier_tokens(allocation_site.code_snippet))
+        if bundle.candidate.summary:
+            tokens.update(self._extract_identifier_tokens(bundle.candidate.summary))
+        if bundle.candidate.function:
+            tokens.add(bundle.candidate.function)
+        return tokens
+
+    def _extract_identifier_tokens(self, text: str) -> set[str]:
+        return {
+            token
+            for token in "".join(char if char.isalnum() or char == "_" else " " for char in text).split()
+            if len(token) >= 3
+        }
 
     def _relative_to_repo(self, path: Path) -> Path | None:
         repo_path = Path(self.repo_path)

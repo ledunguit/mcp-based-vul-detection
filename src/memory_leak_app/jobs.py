@@ -5,6 +5,7 @@ import inspect
 import multiprocessing
 import os
 import queue
+import shlex
 import shutil
 import threading
 import time
@@ -27,11 +28,15 @@ ACTIVE_STATES = {
     "indexing",
     "static_analysis",
     "leakguard_analysis",
+    "dynamic_build",
+    "dynamic_planning",
+    "dynamic_execution",
     "dynamic_merge",
     "judging",
     "reporting",
 }
 ANALYSIS_MODES = {"no_llm", "llm_assisted"}
+DYNAMIC_MODES = {"off", "selective", "aggressive"}
 
 
 @dataclass(frozen=True)
@@ -167,12 +172,23 @@ def classify_scan_failure(error: BaseException | str, detail: str | None = None)
             remediation="Rebuild the LeakGuard image with the same platform configured by LEAKGUARD_DOCKER_PLATFORM, preferably through docker-compose.thesis-demo.yml so build and runtime stay aligned.",
             detail=detail,
         )
-    if "codechecker log" in lowered or "compilation.json" in lowered:
+    if "build command failed" in lowered or "codechecker log" in lowered or "compilation.json" in lowered:
         return ScanFailure(
             code="build_command_failed",
             category="tool_execution",
             message=message,
             remediation="Review the build command and confirm the project can generate compilation.json or compile_commands.json.",
+            detail=detail,
+        )
+    if "unsupported executable format" in lowered or "exec format error" in lowered:
+        return ScanFailure(
+            code="dynamic_binary_incompatible",
+            category="input_validation",
+            message=message,
+            remediation=(
+                "Rebuild the target binary inside the dynamic-analysis environment, or provide a Linux-compatible "
+                "ELF executable (or a shebang script) under the mounted workspace."
+            ),
             detail=detail,
         )
     if "openai" in lowered or "anthropic" in lowered or "judge" in lowered:
@@ -205,6 +221,11 @@ def _scan_worker_main(
             file_limit=request["file_limit"],
             dynamic_run_ids=request["dynamic_run_ids"],
             build_command=request.get("build_command"),
+            dynamic_mode=request.get("dynamic_mode"),
+            dynamic_binary_path=request.get("dynamic_binary_path"),
+            dynamic_args=request.get("dynamic_args") or [],
+            dynamic_timeout_sec=request.get("dynamic_timeout_sec"),
+            dynamic_tool_preference=request.get("dynamic_tool_preference"),
             progress_callback=lambda event: event_queue.put({"kind": "progress", "event": event}),
         )
         report.update(_report_mode_metadata(request["analysis_mode"]))
@@ -227,6 +248,22 @@ def normalize_analysis_mode(value: str | None) -> str:
     if mode not in ANALYSIS_MODES:
         raise ValueError(f"analysis_mode must be one of: {', '.join(sorted(ANALYSIS_MODES))}")
     return mode
+
+
+def normalize_dynamic_mode(value: str | None) -> str:
+    mode = (value or "selective").strip().lower()
+    if mode not in DYNAMIC_MODES:
+        raise ValueError(f"dynamic_mode must be one of: {', '.join(sorted(DYNAMIC_MODES))}")
+    return mode
+
+
+def normalize_dynamic_args(value: str | list[str] | None) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return shlex.split(text) if text else []
+    return [str(item) for item in value]
 
 
 def _build_control_plane(
@@ -275,6 +312,11 @@ class ScanJob:
     analysis_mode: str = "no_llm"
     build_command: str | None = None
     dynamic_run_ids: list[str] = field(default_factory=list)
+    dynamic_mode: str = "selective"
+    dynamic_binary_path: str | None = None
+    dynamic_args: list[str] = field(default_factory=list)
+    dynamic_timeout_sec: int | None = None
+    dynamic_tool_preference: str | None = None
     status: str = "queued"
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -300,6 +342,11 @@ class ScanJob:
             "analysis_mode": self.analysis_mode,
             "build_command": self.build_command,
             "dynamic_run_ids": self.dynamic_run_ids,
+            "dynamic_mode": self.dynamic_mode,
+            "dynamic_binary_path": self.dynamic_binary_path,
+            "dynamic_args": self.dynamic_args,
+            "dynamic_timeout_sec": self.dynamic_timeout_sec,
+            "dynamic_tool_preference": self.dynamic_tool_preference,
             "status": self.status,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -362,9 +409,15 @@ class ScanJobManager:
         analysis_mode: str = "no_llm",
         build_command: str | None = None,
         dynamic_run_ids: list[str] | None = None,
+        dynamic_mode: str = "selective",
+        dynamic_binary_path: str | None = None,
+        dynamic_args: list[str] | None = None,
+        dynamic_timeout_sec: int | None = None,
+        dynamic_tool_preference: str | None = None,
     ) -> ScanJob:
         workspace_path = str(Path(workspace_path).expanduser().resolve())
         analysis_mode = normalize_analysis_mode(analysis_mode)
+        dynamic_mode = normalize_dynamic_mode(dynamic_mode)
         scan_id = uuid.uuid4().hex[:12]
         job = ScanJob(
             scan_id=scan_id,
@@ -373,6 +426,11 @@ class ScanJobManager:
             analysis_mode=analysis_mode,
             build_command=build_command,
             dynamic_run_ids=dynamic_run_ids or [],
+            dynamic_mode=dynamic_mode,
+            dynamic_binary_path=dynamic_binary_path,
+            dynamic_args=dynamic_args or [],
+            dynamic_timeout_sec=dynamic_timeout_sec,
+            dynamic_tool_preference=dynamic_tool_preference,
             worker_mode=self._resolve_worker_mode(),
         )
         with self._condition:
@@ -388,6 +446,11 @@ class ScanJobManager:
                 analysis_mode=job.analysis_mode,
                 build_command=job.build_command,
                 dynamic_run_ids=job.dynamic_run_ids,
+                dynamic_mode=job.dynamic_mode,
+                dynamic_binary_path=job.dynamic_binary_path,
+                dynamic_args=job.dynamic_args,
+                dynamic_timeout_sec=job.dynamic_timeout_sec,
+                dynamic_tool_preference=job.dynamic_tool_preference,
             )
             self._write_status_locked(job)
             self._condition.notify_all()
@@ -529,6 +592,11 @@ class ScanJobManager:
             "analysis_mode": job.analysis_mode,
             "build_command": job.build_command,
             "dynamic_run_ids": job.dynamic_run_ids,
+            "dynamic_mode": job.dynamic_mode,
+            "dynamic_binary_path": job.dynamic_binary_path,
+            "dynamic_args": job.dynamic_args,
+            "dynamic_timeout_sec": job.dynamic_timeout_sec,
+            "dynamic_tool_preference": job.dynamic_tool_preference,
         }
         event_queue = self._mp_context.Queue()
         process = self._mp_context.Process(
@@ -559,6 +627,11 @@ class ScanJobManager:
             "analysis_mode": job.analysis_mode,
             "build_command": job.build_command,
             "dynamic_run_ids": job.dynamic_run_ids,
+            "dynamic_mode": job.dynamic_mode,
+            "dynamic_binary_path": job.dynamic_binary_path,
+            "dynamic_args": job.dynamic_args,
+            "dynamic_timeout_sec": job.dynamic_timeout_sec,
+            "dynamic_tool_preference": job.dynamic_tool_preference,
         }
         control_plane = _build_control_plane(request, self.control_plane_factory)
         with self._condition:
@@ -728,6 +801,11 @@ class ScanJobManager:
             analysis_mode=normalize_analysis_mode(summary.get("analysis_mode")),
             build_command=summary.get("build_command"),
             dynamic_run_ids=list(summary.get("dynamic_run_ids") or []),
+            dynamic_mode=normalize_dynamic_mode(summary.get("dynamic_mode")),
+            dynamic_binary_path=summary.get("dynamic_binary_path"),
+            dynamic_args=normalize_dynamic_args(summary.get("dynamic_args")),
+            dynamic_timeout_sec=summary.get("dynamic_timeout_sec"),
+            dynamic_tool_preference=summary.get("dynamic_tool_preference"),
             status=summary.get("status") or "queued",
             created_at=float(summary.get("created_at") or time.time()),
             updated_at=float(summary.get("updated_at") or time.time()),
@@ -832,6 +910,11 @@ class ScanJobManager:
             workspace_path=job.workspace_path,
             build_command=job.build_command,
             dynamic_run_ids=job.dynamic_run_ids,
+            dynamic_mode=job.dynamic_mode,
+            dynamic_binary_path=job.dynamic_binary_path,
+            dynamic_args=job.dynamic_args,
+            dynamic_timeout_sec=job.dynamic_timeout_sec,
+            dynamic_tool_preference=job.dynamic_tool_preference,
             worker_mode=job.worker_mode,
         )
         self._write_status_locked(job)
@@ -914,6 +997,11 @@ class ScanJobManager:
                     "analysis_mode": job.analysis_mode,
                     "build_command": job.build_command,
                     "dynamic_run_ids": job.dynamic_run_ids,
+                    "dynamic_mode": job.dynamic_mode,
+                    "dynamic_binary_path": job.dynamic_binary_path,
+                    "dynamic_args": job.dynamic_args,
+                    "dynamic_timeout_sec": job.dynamic_timeout_sec,
+                    "dynamic_tool_preference": job.dynamic_tool_preference,
                     "worker_mode": job.worker_mode,
                 },
                 indent=2,
@@ -965,6 +1053,9 @@ class ScanJobManager:
             "candidate_discovery": "indexing",
             "static_analysis": "static_analysis",
             "leakguard_analysis": "leakguard_analysis",
+            "dynamic_build": "dynamic_build",
+            "dynamic_planning": "dynamic_planning",
+            "dynamic_execution": "dynamic_execution",
             "dynamic_merge": "dynamic_merge",
             "judging": "judging",
             "reporting": "reporting",

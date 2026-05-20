@@ -9,15 +9,16 @@
     "preview": "vite preview --host 0.0.0.0 --port 4173"
   },
   "dependencies": {
+    "@ant-design/icons": "^5.5.2",
+    "@xyflow/react": "^12.10.2",
+    "antd": "^5.22.0",
+    "lucide-react": "^1.11.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-router-dom": "^7.9.4"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.1.13",
     "@vitejs/plugin-react": "^5.0.4",
-    "daisyui": "^5.0.50",
-    "tailwindcss": "^4.1.13",
     "vite": "^7.3.1"
   }
 }

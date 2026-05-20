@@ -1,3 +1,7 @@
+import { Modal, Typography } from 'antd';
+
+const { Text } = Typography;
+
 export function ConfirmDeletionModal({ dialog, busy, onClose, onConfirm }) {
   if (!dialog?.open) {
     return null;
@@ -10,21 +14,21 @@ export function ConfirmDeletionModal({ dialog, busy, onClose, onConfirm }) {
       : `This will permanently remove scan ${dialog.scan?.scan_id} and all saved reports, logs, and artifacts.`;
 
   return (
-    <dialog className="modal modal-open">
-      <div className="modal-box border border-error/30 bg-base-100 shadow-2xl">
-        <h3 className="text-xl font-bold">{title}</h3>
-        <p className="mt-3 text-sm leading-7 text-base-content/75">{description}</p>
-        <p className="mt-2 text-sm text-base-content/60">This action cannot be undone.</p>
-        <div className="modal-action">
-          <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
-          <button type="button" className="btn btn-error" onClick={onConfirm} disabled={busy}>
-            {busy ? 'Deleting...' : 'Delete'}
-          </button>
-        </div>
-      </div>
-      <button type="button" className="modal-backdrop" onClick={onClose} disabled={busy} aria-label="Close confirmation modal" />
-    </dialog>
+    <Modal
+      open={dialog.open}
+      title={title}
+      onCancel={onClose}
+      onOk={onConfirm}
+      okText={busy ? 'Deleting...' : 'Delete'}
+      cancelText="Cancel"
+      okButtonProps={{ danger: true, loading: busy }}
+      cancelButtonProps={{ disabled: busy }}
+      maskClosable={!busy}
+      closable={!busy}
+    >
+      <Text>{description}</Text>
+      <br />
+      <Text type="secondary">This action cannot be undone.</Text>
+    </Modal>
   );
 }

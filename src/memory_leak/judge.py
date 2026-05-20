@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from difflib import unified_diff
@@ -20,6 +21,9 @@ from .shared_schema import (
     ToolKind,
     VerdictResult,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 LEAK_JUDGE_SYSTEM_PROMPT = """You are a memory leak investigation judge.
@@ -137,6 +141,18 @@ class HeuristicMemoryLeakJudge:
         dynamic_evidence_ids = [
             idx for idx, evidence in enumerate(candidate.evidence) if evidence.tool_kind == ToolKind.DYNAMIC
         ]
+        dynamic_attempt_ids = [
+            idx
+            for idx, evidence in enumerate(candidate.evidence)
+            if evidence.tool_kind == ToolKind.ORCHESTRATOR and evidence.kind == "dynamic_validation_attempt"
+        ]
+        adequate_dynamic_attempt_ids = [
+            idx
+            for idx, evidence in enumerate(candidate.evidence)
+            if evidence.tool_kind == ToolKind.ORCHESTRATOR
+            and evidence.kind == "dynamic_validation_attempt"
+            and self._is_adequate_negative_dynamic_attempt(evidence)
+        ]
         leakguard_evidence_ids = [
             idx for idx, evidence in enumerate(candidate.evidence) if evidence.tool == "memory.leakguard_run"
         ]
@@ -145,6 +161,8 @@ class HeuristicMemoryLeakJudge:
         ]
 
         has_dynamic = bool(dynamic_evidence_ids)
+        has_dynamic_attempt = bool(dynamic_attempt_ids)
+        has_adequate_dynamic_attempt = bool(adequate_dynamic_attempt_ids)
         has_leakguard = bool(leakguard_evidence_ids)
         has_cleanup_gap = any(
             constraint.startswith("possible_unfreed_allocation:")
@@ -158,6 +176,29 @@ class HeuristicMemoryLeakJudge:
             confidence = LeakConfidence.HIGH
             supporting = dynamic_evidence_ids + leakguard_evidence_ids
             why = "Dynamic evidence confirms the leak and static evidence supports the same candidate."
+        elif has_adequate_dynamic_attempt and has_leakguard and (has_cleanup_gap or has_local_free_gap):
+            verdict = InvestigationVerdict.LIKELY_LEAK
+            confidence = LeakConfidence.MEDIUM
+            supporting = leakguard_evidence_ids + path_constraint_ids + adequate_dynamic_attempt_ids
+            why = (
+                "Static evidence remains strong, but the attempted dynamic workload did not reproduce a matching leak "
+                "for this candidate yet."
+            )
+        elif has_adequate_dynamic_attempt and has_cleanup_gap and has_local_free_gap:
+            verdict = InvestigationVerdict.INCONCLUSIVE
+            confidence = LeakConfidence.MEDIUM
+            supporting = path_constraint_ids + adequate_dynamic_attempt_ids
+            why = (
+                "Static evidence suggests a leak path, but attempted dynamic validation has not corroborated it under "
+                "the current workload."
+            )
+        elif has_adequate_dynamic_attempt:
+            verdict = InvestigationVerdict.FALSE_POSITIVE
+            confidence = LeakConfidence.LOW
+            supporting = adequate_dynamic_attempt_ids
+            why = (
+                "Only weak static evidence is available and the attempted dynamic validation did not surface a matching leak."
+            )
         elif has_leakguard and (has_cleanup_gap or has_local_free_gap):
             verdict = InvestigationVerdict.LIKELY_LEAK
             confidence = LeakConfidence.HIGH
@@ -190,29 +231,50 @@ class HeuristicMemoryLeakJudge:
             confidence=confidence,
             why=why,
             supporting_evidence_ids=sorted(set(supporting)),
-            missing_evidence=self._missing_evidence(has_dynamic, has_leakguard, has_cleanup_gap),
+            missing_evidence=self._missing_evidence(
+                has_dynamic=has_dynamic,
+                has_dynamic_attempt=has_dynamic_attempt,
+                has_adequate_dynamic_attempt=has_adequate_dynamic_attempt,
+                has_leakguard=has_leakguard,
+                has_cleanup_gap=has_cleanup_gap,
+            ),
             human_explanation=self._human_explanation(bundle, verdict, why),
             fix_suggestions=self._enrich_suggestions(bundle, self._fix_suggestions(bundle)),
         )
         return bundle
 
     def judge_bundles(self, bundles: list[LeakBundle]) -> list[LeakBundle]:
+        logger.info(f"Starting judge process for {len(bundles)} leak bundles")
         return [self.judge_bundle(bundle) for bundle in bundles]
 
     def _missing_evidence(
         self,
         has_dynamic: bool,
+        has_dynamic_attempt: bool,
+        has_adequate_dynamic_attempt: bool,
         has_leakguard: bool,
         has_cleanup_gap: bool,
     ) -> list[str]:
         missing = []
         if not has_dynamic:
-            missing.append("dynamic confirmation")
+            if has_adequate_dynamic_attempt:
+                missing.append("broader dynamic coverage")
+            elif has_dynamic_attempt:
+                missing.append("higher-coverage dynamic validation")
+            else:
+                missing.append("dynamic confirmation")
         if not has_leakguard:
             missing.append("project-level static confirmation")
         if not has_cleanup_gap:
             missing.append("clear cleanup bypass path")
         return missing
+
+    def _is_adequate_negative_dynamic_attempt(self, evidence: Any) -> bool:
+        raw = evidence.raw_evidence or {}
+        if raw.get("matched_dynamic_evidence") is not False:
+            return False
+        workload = str(raw.get("workload_adequacy") or "").strip().lower()
+        return workload == "adequate"
 
     def _human_explanation(
         self,

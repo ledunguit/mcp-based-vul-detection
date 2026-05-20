@@ -28,6 +28,16 @@ export function useActivityPageActions() {
       consoleState.selectedScan
         ? consoleState.loadEventHistory(consoleState.selectedScan.scan_id).catch(() => undefined)
         : undefined,
+    handleReloadStructured: () =>
+      consoleState.selectedScan
+        ? consoleState.loadStructuredReport(consoleState.selectedScan.scan_id).catch(() => undefined)
+        : undefined,
+    handleLoadReport: (format) =>
+      consoleState.selectedScan ? consoleState.loadReport(consoleState.selectedScan.scan_id, format).catch(() => undefined) : undefined,
+    handleOpenHtml: () =>
+      consoleState.selectedScan
+        ? window.open(`/api/scans/${consoleState.selectedScan.scan_id}/report?format=html`, '_blank', 'noopener,noreferrer')
+        : undefined,
     handleExportLog: () => consoleState.exportLog(describeEvent),
     formatEvent: describeEvent,
   };

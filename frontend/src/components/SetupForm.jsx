@@ -1,3 +1,19 @@
+import { Play } from 'lucide-react';
+import { Button, Col, Collapse, Divider, Flex, Form, Input, InputNumber, Row, Select, Space, Tag, Typography } from 'antd';
+
+import { AppCard } from './ui';
+
+const { Text } = Typography;
+
+function SectionHeader({ title, subtitle }) {
+  return (
+    <Flex vertical gap={2}>
+      <Text strong>{title}</Text>
+      {subtitle ? <Text type="secondary">{subtitle}</Text> : null}
+    </Flex>
+  );
+}
+
 export function SetupForm({
   loadingWorkspaces,
   workspaces,
@@ -14,74 +30,202 @@ export function SetupForm({
   setBuildCommand,
   dynamicRunIds,
   setDynamicRunIds,
+  dynamicMode,
+  setDynamicMode,
+  dynamicBinaryPath,
+  setDynamicBinaryPath,
+  dynamicArgs,
+  setDynamicArgs,
+  dynamicTimeoutSec,
+  setDynamicTimeoutSec,
+  dynamicToolPreference,
+  setDynamicToolPreference,
   activeScan,
   onStartScan,
   onGoActivity,
 }) {
   const canStartScan = !activeScan && Boolean(customPath.trim() || workspacePath);
+  const allowedRootsSummary = allowedRoots.length ? `Allowed roots: ${allowedRoots.length}` : 'No allowed roots configured';
+
+  const workspaceOptions = workspaces.map((workspace) => ({
+    value: workspace.path,
+    label: `${workspace.name} (${workspace.c_cpp_file_count} files)`,
+  }));
 
   return (
-    <div className="card border border-base-300 bg-base-100 shadow-xl">
-      <div className="card-body gap-4">
-        <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h2 className="card-title text-2xl">Scan Setup</h2>
-            <p className="text-sm text-base-content/65">Define the target repository and investigation strategy.</p>
-          </div>
-          <div className="badge badge-info badge-soft">{loadingWorkspaces ? 'loading' : `${workspaces.length} mounted`}</div>
-        </div>
+    <AppCard
+      title="Start a scan"
+      subtitle="Choose workspace and mode. Open advanced only if needed."
+      extra={<Tag color="processing">{loadingWorkspaces ? 'Loading' : `${workspaces.length} mounted`}</Tag>}
+      bodyGap={20}
+    >
+      <Form layout="vertical">
+        <Flex vertical gap={20}>
+          <Flex vertical gap={12}>
+            <SectionHeader title="Target" />
+            <Row gutter={[16, 0]}>
+              <Col xs={24} md={12}>
+                <Form.Item label="Workspace" extra={allowedRootsSummary} style={{ marginBottom: 16 }}>
+                  <Select
+                    value={workspacePath || undefined}
+                    onChange={setWorkspacePath}
+                    options={workspaceOptions}
+                    placeholder="Select workspace"
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={12}>
+                <Form.Item label="Path override" style={{ marginBottom: 16 }}>
+                  <Input
+                    placeholder="/workspace/project"
+                    value={customPath}
+                    onChange={(event) => setCustomPath(event.target.value)}
+                  />
+                </Form.Item>
+              </Col>
+            </Row>
+          </Flex>
 
-        <fieldset className="fieldset">
-          <legend className="fieldset-legend">Allowed workspace</legend>
-          <select className="select select-bordered w-full" value={workspacePath} onChange={(event) => setWorkspacePath(event.target.value)}>
-            {workspaces.map((workspace) => (
-              <option key={workspace.path} value={workspace.path}>
-                {workspace.name} ({workspace.c_cpp_file_count} C/C++ files)
-              </option>
-            ))}
-          </select>
-          <p className="label text-xs text-base-content/50">{loadingWorkspaces ? 'Loading workspaces...' : allowedRoots.join(' | ')}</p>
-        </fieldset>
+          <Divider style={{ margin: 0 }} />
 
-        <fieldset className="fieldset">
-          <legend className="fieldset-legend">Or explicit allowed path</legend>
-          <input className="input input-bordered w-full" placeholder="/workspace/project" value={customPath} onChange={(event) => setCustomPath(event.target.value)} />
-        </fieldset>
+          <Flex vertical gap={12}>
+            <SectionHeader title="Scan mode" />
+            <Row gutter={[16, 0]}>
+              <Col xs={24} md={12}>
+                <Form.Item label="Analysis mode" style={{ marginBottom: 16 }}>
+                  <Select
+                    value={analysisMode}
+                    onChange={setAnalysisMode}
+                    options={[
+                      { value: 'no_llm', label: 'No LLM' },
+                      { value: 'llm_assisted', label: 'LLM-assisted' },
+                    ]}
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={12}>
+                <Form.Item label="Dynamic mode" style={{ marginBottom: 16 }}>
+                  <Select
+                    value={dynamicMode}
+                    onChange={setDynamicMode}
+                    options={[
+                      { value: 'off', label: 'Off' },
+                      { value: 'selective', label: 'Selective' },
+                      { value: 'aggressive', label: 'Aggressive' },
+                    ]}
+                  />
+                </Form.Item>
+              </Col>
+            </Row>
+          </Flex>
 
-        <div className="grid gap-4 lg:grid-cols-2">
-          <fieldset className="fieldset">
-            <legend className="fieldset-legend">Analysis mode</legend>
-            <select className="select select-bordered w-full" value={analysisMode} onChange={(event) => setAnalysisMode(event.target.value)}>
-              <option value="no_llm">No LLM</option>
-              <option value="llm_assisted">LLM-assisted judge</option>
-            </select>
-          </fieldset>
+          <Collapse
+            items={[
+              {
+                key: 'advanced',
+                label: 'Advanced options',
+                children: (
+                  <Flex vertical gap={16}>
+                    <Row gutter={[16, 0]}>
+                      <Col xs={24} md={12}>
+                        <Form.Item label="File limit" style={{ marginBottom: 16 }}>
+                          <InputNumber
+                            min={1}
+                            max={200000}
+                            value={Number(fileLimit)}
+                            onChange={(value) => setFileLimit(String(value ?? 500))}
+                            style={{ width: '100%' }}
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={12}>
+                        <Form.Item label="Runner" style={{ marginBottom: 16 }}>
+                          <Select
+                            value={dynamicToolPreference}
+                            onChange={setDynamicToolPreference}
+                            options={[
+                              { value: 'auto', label: 'Auto' },
+                              { value: 'valgrind', label: 'Valgrind' },
+                              { value: 'lsan', label: 'LSan' },
+                              { value: 'asan', label: 'ASan' },
+                            ]}
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={12}>
+                        <Form.Item label="Timeout (sec)" style={{ marginBottom: 16 }}>
+                          <InputNumber
+                            min={1}
+                            max={7200}
+                            value={Number(dynamicTimeoutSec)}
+                            onChange={(value) => setDynamicTimeoutSec(String(value ?? 120))}
+                            style={{ width: '100%' }}
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={12}>
+                        <Form.Item label="Build command" style={{ marginBottom: 16 }}>
+                          <Input
+                            placeholder="make CC=clang"
+                            value={buildCommand}
+                            onChange={(event) => setBuildCommand(event.target.value)}
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={12}>
+                        <Form.Item label="Executable hint" style={{ marginBottom: 16 }}>
+                          <Input
+                            placeholder="/workspace/targets/my-project/build/bin/app"
+                            value={dynamicBinaryPath}
+                            onChange={(event) => setDynamicBinaryPath(event.target.value)}
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={12}>
+                        <Form.Item label="Executable args" style={{ marginBottom: 16 }}>
+                          <Input
+                            placeholder="--input corpus.txt --mode smoke"
+                            value={dynamicArgs}
+                            onChange={(event) => setDynamicArgs(event.target.value)}
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col span={24}>
+                        <Form.Item label="External run IDs" extra="Comma-separated IDs." style={{ marginBottom: 0 }}>
+                          <Input
+                            placeholder="run-1, run-2"
+                            value={dynamicRunIds}
+                            onChange={(event) => setDynamicRunIds(event.target.value)}
+                          />
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                  </Flex>
+                ),
+              },
+            ]}
+          />
+        </Flex>
+      </Form>
 
-          <fieldset className="fieldset">
-            <legend className="fieldset-legend">File limit</legend>
-            <input className="input input-bordered w-full" type="number" min="1" max="200000" value={fileLimit} onChange={(event) => setFileLimit(event.target.value)} />
-          </fieldset>
-        </div>
-
-        <fieldset className="fieldset">
-          <legend className="fieldset-legend">Optional build command</legend>
-          <textarea className="textarea textarea-bordered min-h-28 w-full" placeholder="make CC=clang" value={buildCommand} onChange={(event) => setBuildCommand(event.target.value)} />
-        </fieldset>
-
-        <fieldset className="fieldset">
-          <legend className="fieldset-legend">Dynamic run IDs</legend>
-          <input className="input input-bordered w-full" placeholder="run-1, run-2" value={dynamicRunIds} onChange={(event) => setDynamicRunIds(event.target.value)} />
-        </fieldset>
-
-        <div className="flex flex-col gap-3 lg:flex-row lg:justify-end">
-          <button type="button" className="btn btn-primary" onClick={onStartScan} disabled={!canStartScan}>
+      <Flex
+        justify="space-between"
+        align="center"
+        gap={16}
+        wrap
+        style={{
+          paddingTop: 16,
+          borderTop: '1px solid rgba(64, 71, 84, 0.08)',
+        }}
+      >
+        <Text type="secondary">Only workspace and mode are required to start.</Text>
+        <Space wrap>
+          <Button onClick={onGoActivity}>Open Activity</Button>
+          <Button type="primary" icon={<Play size={16} />} onClick={onStartScan} disabled={!canStartScan}>
             Start Scan
-          </button>
-          <button type="button" className="btn btn-outline" onClick={onGoActivity}>
-            Go to Activity
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </Space>
+      </Flex>
+    </AppCard>
   );
 }

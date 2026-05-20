@@ -56,16 +56,21 @@ class InvestigationPolicy:
     STATIC_EXPANSION_TOOL_SETS = {
         "minimal": [
             "memory.function_summary",
+            "memory.ownership_summary",
             "memory.path_constraints",
         ],
         "balanced": [
             "memory.function_summary",
+            "memory.ownership_summary",
+            "memory.ownership_conventions",
             "memory.path_constraints",
             "memory.interprocedural_flow",
         ],
         "full": [
             "memory.ast_scan",
             "memory.function_summary",
+            "memory.ownership_summary",
+            "memory.ownership_conventions",
             "memory.call_graph",
             "memory.path_constraints",
             "memory.interprocedural_flow",
@@ -76,6 +81,8 @@ class InvestigationPolicy:
     STATIC_EXPANSION_TOOLS = [
         "memory.ast_scan",
         "memory.function_summary",
+        "memory.ownership_summary",
+        "memory.ownership_conventions",
         "memory.call_graph",
         "memory.path_constraints",
         "memory.interprocedural_flow",
@@ -83,11 +90,16 @@ class InvestigationPolicy:
     ]
 
     PROJECT_STATIC_TOOLS = [
+        "repo.project_ownership_graph",
         "memory.leakguard_run",
         "memory.leakguard_get_report",
     ]
 
     DYNAMIC_TOOLS = [
+        "dynamic.build_target",
+        "valgrind.analyze_memcheck",
+        "asan.run",
+        "lsan.run",
         "memory.get_leak_bundles",
     ]
 
@@ -124,18 +136,28 @@ class InvestigationPolicy:
             decisions=decisions,
         )
 
-    def project_static_decision(self, build_command: str | None = None) -> ToolDecision | None:
+    def project_static_decision(self, build_command: str | None = None) -> list[ToolDecision]:
+        decisions: list[ToolDecision] = []
+        if "repo.project_ownership_graph" in self.available_tools:
+            decisions.append(
+                ToolDecision(
+                    "repo.project_ownership_graph",
+                    "Repo-level ownership graph can connect allocator/deallocator conventions across files.",
+                )
+            )
         if "memory.leakguard_run" in self.available_tools:
             reason = "Project-level static analyzer can corroborate local candidates."
             if build_command:
                 reason += " Build command is available for compile database generation."
-            return ToolDecision("memory.leakguard_run", reason)
-        if "memory.leakguard_get_report" in self.available_tools:
-            return ToolDecision(
-                "memory.leakguard_get_report",
-                "Existing LeakGuard artifacts can be imported without rerunning analysis.",
+            decisions.append(ToolDecision("memory.leakguard_run", reason))
+        elif "memory.leakguard_get_report" in self.available_tools:
+            decisions.append(
+                ToolDecision(
+                    "memory.leakguard_get_report",
+                    "Existing LeakGuard artifacts can be imported without rerunning analysis.",
+                )
             )
-        return None
+        return decisions
 
     def dynamic_decisions(self, run_ids: list[str]) -> list[ToolDecision]:
         if "memory.get_leak_bundles" not in self.available_tools:
@@ -169,7 +191,8 @@ class InvestigationPolicy:
                 "Only expand per-file static context when candidates are found.",
                 "Default to balanced static expansion unless overridden for benchmarking.",
                 "Use LeakGuard project-level evidence when available.",
-                "Merge provided dynamic run bundles before final judging.",
+                "Auto-plan dynamic validation when executable targets can be discovered.",
+                "Merge provided or newly created dynamic run bundles before final judging.",
                 "Judge only after static expansion and available dynamic evidence are merged.",
             ],
         }

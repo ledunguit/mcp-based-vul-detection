@@ -16,6 +16,45 @@ def _report() -> dict:
         "candidate_source_file_count": 1,
         "bundle_count": 1,
         "evidence_count": 1,
+        "dynamic_mode": "selective",
+        "dynamic_tool_preference": "valgrind",
+        "auto_dynamic_run_ids": ["run:auto-demo"],
+        "external_dynamic_run_ids": [],
+        "dynamic_execution_plan": {
+            "requested_mode": "selective",
+            "effective_mode": "selective",
+            "tool_preference": "valgrind",
+            "target_count": 1,
+            "discovered_executable_count": 2,
+            "discovered_input_count": 1,
+            "planning_notes": ["Dynamic planner synthesized workload arguments from repository sample/corpus inputs."],
+            "skipped_reasons": [],
+            "targets": [
+                {
+                    "tool": "valgrind.analyze_memcheck",
+                    "target_path": "/tmp/repo/bin/demo",
+                    "args": ["/tmp/repo/examples/sample.txt"],
+                    "cwd": "/tmp/repo/bin",
+                    "timeout_sec": 120,
+                    "labels": ["mode:selective"],
+                    "reason": "Validate the highest-risk static bundles with a dynamic analyzer.",
+                    "source": "auto_discovered",
+                    "bundle_ids": ["bundle-1"],
+                    "candidate_ids": ["candidate-1"],
+                    "score": 72,
+                    "arg_strategy": "auto_input_file",
+                    "input_paths": ["/tmp/repo/examples/sample.txt"],
+                }
+            ],
+        },
+        "dynamic_rounds": [
+            {
+                "round_index": 1,
+                "new_run_ids": ["run:auto-demo"],
+                "matched_bundle_ids": [],
+                "attempted_bundle_ids": ["bundle-1"],
+            }
+        ],
         "tool_invocations": [
             {
                 "tool": "memory.candidate_scan",
@@ -90,6 +129,11 @@ def test_render_markdown_report_includes_verdict_evidence_and_fix() -> None:
     markdown = render_markdown_report(report)
 
     assert "# Memory Leak Investigation Report" in markdown
+    assert "## Dynamic Validation" in markdown
+    assert "Planned targets: 1" in markdown
+    assert "strategy=`auto_input_file`" in markdown
+    assert "`/tmp/repo/examples/sample.txt`" in markdown
+    assert "Dynamic rounds executed: 1" in markdown
     assert "`likely_leak`: 1" in markdown
     assert "#### Why This Is Considered A Leak" in markdown
     assert "Verdict quality: `complete`" in markdown
@@ -121,6 +165,9 @@ def test_result_snapshot_and_comparison_are_stable() -> None:
     assert baseline["tool_counts"]["memory.leakguard_run"] == 1
     assert baseline["tool_invocation_count"] == 1
     assert baseline["task_state_counts"]["needs_dynamic_validation"] == 1
+    assert baseline["auto_dynamic_run_ids"] == ["run:auto-demo"]
+    assert baseline["dynamic_execution_plan"]["target_count"] == 1
+    assert baseline["dynamic_rounds"][0]["round_index"] == 1
     assert comparison["schema_version"] == "memory-leak-comparison/v1"
     assert comparison["added_bundle_ids"] == ["bundle-2"]
     assert comparison["removed_bundle_ids"] == ["bundle-1"]

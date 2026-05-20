@@ -1,5 +1,10 @@
-import { badgeClass, cardBorderClass, formatClock } from '../utils/ui';
+import { FolderCode, History, RefreshCw, Trash2 } from 'lucide-react';
+import { Button, Flex, List, Space, Tag, Typography, theme } from 'antd';
 
+import { tagColor, formatClock, formatRelativeTime } from '../utils/ui';
+import { AppCard } from './ui';
+
+const { Text } = Typography;
 const TERMINAL_STATES = new Set(['completed', 'failed', 'cancelled']);
 
 export function ScanHistoryList({
@@ -11,71 +16,120 @@ export function ScanHistoryList({
   onSelectScan,
   onRequestDeleteScan,
   onRequestDeleteTerminalScans,
+  standalone = false,
 }) {
-  return (
-    <div className="card border border-base-300 bg-base-100 shadow-xl">
-      <div className="card-body gap-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h2 className="card-title text-2xl">Scan History</h2>
-            <p className="text-sm text-base-content/65">Open a previous or running investigation.</p>
-          </div>
-          <div className="flex gap-2">
-            <button type="button" className="btn btn-ghost btn-sm" onClick={onRefresh}>
-              Refresh
-            </button>
-            <button
-              type="button"
-              className="btn btn-outline btn-error btn-sm"
-              onClick={onRequestDeleteTerminalScans}
-              disabled={deletingScans || !terminalScanCount}
-            >
-              Delete Old
-            </button>
-          </div>
-        </div>
+  const { token } = theme.useToken();
 
-        <div className="flex max-h-[48rem] flex-col gap-3 overflow-auto pr-1">
-          {recentScans.length ? (
-            recentScans.map((scan) => (
-              <div
-                key={scan.scan_id}
-                className={`card border bg-base-200/55 text-left shadow-sm transition hover:shadow-md ${cardBorderClass(scan.status)} ${
-                  selectedScanId === scan.scan_id ? 'ring-2 ring-primary/50' : ''
-                }`}
+  return (
+    <AppCard
+      title="Recent Investigations"
+      extra={
+        <Space wrap>
+          <Button type="text" size="small" icon={<RefreshCw size={14} />} onClick={onRefresh}>
+            Refresh
+          </Button>
+          <Button
+            danger
+            size="small"
+            icon={<Trash2 size={14} />}
+            onClick={onRequestDeleteTerminalScans}
+            disabled={deletingScans || !terminalScanCount}
+          >
+            Delete Old
+          </Button>
+        </Space>
+      }
+    >
+      <Space direction="vertical" size={4}>
+        <Tag>
+          <Flex align="center" gap={6}>
+            <History size={14} />
+            <span>Scan history</span>
+          </Flex>
+        </Tag>
+        <Text type="secondary">Open a running or completed scan, compare statuses, and clean up terminal entries.</Text>
+      </Space>
+
+      <List
+        dataSource={recentScans}
+        locale={{ emptyText: 'No persisted scans yet.' }}
+        split={false}
+        grid={
+          standalone
+            ? { gutter: 16, xs: 1, md: 2, xxl: 3 }
+            : undefined
+        }
+        style={{ maxHeight: standalone ? 'none' : '70vh', overflow: standalone ? 'visible' : 'auto' }}
+        renderItem={(scan) => {
+          const selected = selectedScanId === scan.scan_id;
+
+          return (
+            <List.Item style={{ paddingBlock: 0, paddingInline: 0, border: 0, marginBottom: 12 }}>
+              <AppCard
+                hoverable
+                size="small"
+                onClick={() => onSelectScan(scan)}
+                bodyGap={12}
+                style={{
+                  width: '100%',
+                  cursor: 'pointer',
+                  borderColor: selected ? token.colorPrimary : token.colorBorderSecondary,
+                  background: selected ? token.colorPrimaryBg : token.colorBgContainer,
+                  boxShadow: selected ? `0 0 0 1px ${token.colorPrimaryBorder}` : undefined,
+                }}
               >
-                <div className="card-body gap-3 p-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-bold">{scan.scan_id}</span>
-                    <span className={badgeClass(scan.status)}>{scan.status}</span>
-                  </div>
-                  <button type="button" className="text-left" onClick={() => onSelectScan(scan)}>
-                    <p className="truncate text-sm text-base-content/75">{scan.workspace_path}</p>
-                  </button>
-                  <div className="flex items-center justify-between gap-2 text-xs text-base-content/55">
-                    <span>created {formatClock(scan.created_at)}</span>
-                    <span className="badge badge-outline badge-sm">{scan.analysis_mode || 'no_llm'}</span>
-                  </div>
-                  <div className="flex justify-end">
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm text-error"
-                      onClick={() => onRequestDeleteScan(scan)}
-                      disabled={deletingScans || !TERMINAL_STATES.has(scan.status)}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="rounded-box border border-dashed border-base-300 p-6 text-sm text-base-content/60">
-              No persisted scans yet.
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  <Space wrap align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
+                    <Text strong>{scan.scan_id}</Text>
+                    <Space size={8} wrap>
+                      <Tag color={tagColor(scan.status)}>{scan.status}</Tag>
+                      <Tag>{scan.analysis_mode || 'no_llm'}</Tag>
+                    </Space>
+                  </Space>
+
+                  <Space size={8} align="start">
+                    <FolderCode size={14} color={token.colorPrimary} style={{ marginTop: 2 }} />
+                    <Text type="secondary">{scan.workspace_path}</Text>
+                  </Space>
+
+                  <Space size={24} wrap>
+                    <div>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        Created
+                      </Text>
+                      <div>{formatClock(scan.created_at)}</div>
+                    </div>
+                    <div>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        Age
+                      </Text>
+                      <div>{formatRelativeTime(scan.created_at)}</div>
+                    </div>
+                  </Space>
+                </Space>
+
+                <Space wrap style={{ justifyContent: 'space-between', width: '100%' }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    Tap to inspect on the canvas
+                  </Text>
+                  <Button
+                    danger
+                    type="link"
+                    size="small"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onRequestDeleteScan(scan);
+                    }}
+                    disabled={deletingScans || !TERMINAL_STATES.has(scan.status)}
+                  >
+                    Delete
+                  </Button>
+                </Space>
+              </AppCard>
+            </List.Item>
+          );
+        }}
+      />
+    </AppCard>
   );
 }

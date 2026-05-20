@@ -1,43 +1,104 @@
-export function TargetSnapshotCard({ selectedWorkspace, customPath, workspacePath, analysisMode }) {
+import { Descriptions, Grid, Tag, Typography } from "antd";
+
+import { AppCard } from "./ui";
+
+const { Text } = Typography;
+
+function TruncatedCode({ value, fallback }) {
+  const text = value?.trim() || fallback;
+
   return (
-    <div className="card border border-base-300 bg-base-100 shadow-xl">
-      <div className="card-body gap-4">
-        <h2 className="card-title text-2xl">Target Snapshot</h2>
-        <div className="stats stats-vertical border border-base-300 bg-base-200/60 shadow-sm lg:stats-horizontal">
-          <div className="stat">
-            <div className="stat-title">Workspace</div>
-            <div className="stat-value text-lg">{selectedWorkspace?.name || customPath.trim() || 'Not selected'}</div>
-          </div>
-          <div className="stat">
-            <div className="stat-title">C/C++ files</div>
-            <div className="stat-value text-lg">{selectedWorkspace?.c_cpp_file_count ?? '-'}</div>
-          </div>
-          <div className="stat">
-            <div className="stat-title">Judge mode</div>
-            <div className="stat-value text-lg">{analysisMode}</div>
-          </div>
-        </div>
+    <Text
+      code
+      title={text}
+      style={{
+        display: "block",
+        maxWidth: "100%",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {text}
+    </Text>
+  );
+}
 
-        <div className="rounded-box border border-base-300 bg-base-200/60 p-4">
-          <p className="text-xs font-bold uppercase tracking-[0.24em] text-base-content/50">Mounted path</p>
-          <code className="mt-2 block overflow-auto text-sm">{customPath.trim() || workspacePath || 'n/a'}</code>
-        </div>
+export function TargetSnapshotCard({
+  selectedWorkspace,
+  customPath,
+  workspacePath,
+  analysisMode,
+  dynamicMode,
+  dynamicToolPreference,
+  dynamicBinaryPath,
+}) {
+  const screens = Grid.useBreakpoint();
+  const workspaceLabel =
+    selectedWorkspace?.name || customPath.trim() || "Not selected";
+  const mountedPath = customPath.trim() || workspacePath || "n/a";
 
-        <div className="rounded-box border border-base-300 bg-base-200/60 p-4">
-          <p className="text-xs font-bold uppercase tracking-[0.24em] text-base-content/50">Sample files</p>
-          {selectedWorkspace?.sample_files?.length ? (
-            <ul className="mt-3 flex flex-col gap-2 text-sm text-base-content/75">
-              {selectedWorkspace.sample_files.slice(0, 6).map((file) => (
-                <li key={file} className="truncate">
-                  {file}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-3 text-sm text-base-content/60">No indexed sample files for this workspace yet.</p>
-          )}
-        </div>
-      </div>
-    </div>
+  return (
+    <AppCard
+      title="Summary"
+      extra={<Tag color="processing">Ready</Tag>}
+      bodyGap={8}
+    >
+      <Descriptions
+        column={1}
+        colon={false}
+        size="small"
+        styles={{
+          label: { width: 120, color: "rgba(64, 71, 84, 0.7)" },
+          content: { color: "rgba(64, 71, 84, 0.9)" },
+        }}
+        items={[
+          {
+            key: "workspace",
+            label: "Workspace",
+            children: (
+              <Text strong title={workspaceLabel} style={{ display: "block" }}>
+                {workspaceLabel}
+              </Text>
+            ),
+          },
+          {
+            key: "files",
+            label: "C/C++ files",
+            children: selectedWorkspace?.c_cpp_file_count ?? "-",
+          },
+          {
+            key: "judge",
+            label: "Judge mode",
+            children: analysisMode,
+          },
+          {
+            key: "dynamic",
+            label: "Dynamic mode",
+            children: dynamicMode,
+          },
+          {
+            key: "runner",
+            label: "Runner",
+            children: dynamicToolPreference,
+          },
+          {
+            key: "hint",
+            label: "Binary hint",
+            children: (
+              <TruncatedCode
+                value={dynamicBinaryPath}
+                fallback="auto-discovery"
+              />
+            ),
+          },
+          {
+            key: "path",
+            label: "Mounted path",
+            children: <TruncatedCode value={mountedPath} fallback="n/a" />,
+          },
+        ]}
+      />
+    </AppCard>
   );
 }

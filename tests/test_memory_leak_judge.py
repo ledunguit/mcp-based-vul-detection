@@ -277,3 +277,90 @@ def test_llm_fix_suggestion_preview_retargets_cleanup_line(tmp_path: Path) -> No
     assert suggestion.target_location is not None
     assert suggestion.target_location.line == 3
     assert "free(buf);" in (suggestion.after_snippet or "")
+
+
+def test_heuristic_judge_treats_negative_dynamic_attempt_as_counterweight() -> None:
+    judge = MemoryLeakJudge(use_llm=False)
+    bundle = _bundle()
+    bundle.candidate.evidence.append(
+        LeakEvidence.model_validate(
+            {
+                "tool": "memory.dynamic_validation_attempt",
+                "tool_kind": "orchestrator",
+                "kind": "dynamic_validation_attempt",
+                "message": "Dynamic validation round 1 did not correlate a leak",
+                "confidence": "medium",
+                "severity": "info",
+                "raw_evidence": {
+                    "round_index": 1,
+                    "matched_dynamic_evidence": False,
+                    "workload_adequacy": "adequate",
+                },
+            }
+        )
+    )
+
+    judged = judge.judge_bundle(bundle)
+
+    assert judged.verdict is not None
+    assert judged.verdict.verdict.value == "inconclusive"
+    assert "broader dynamic coverage" in judged.verdict.missing_evidence
+
+
+def test_heuristic_judge_can_mark_weak_candidate_false_positive_after_negative_dynamic_attempt() -> None:
+    judge = MemoryLeakJudge(use_llm=False)
+    bundle = _bundle()
+    bundle.candidate.path_constraints = []
+    bundle.candidate.tags = ["static", "candidate_scan"]
+    bundle.candidate.evidence = bundle.candidate.evidence[:1]
+    bundle.candidate.evidence.append(
+        LeakEvidence.model_validate(
+            {
+                "tool": "memory.dynamic_validation_attempt",
+                "tool_kind": "orchestrator",
+                "kind": "dynamic_validation_attempt",
+                "message": "Dynamic validation round 1 did not correlate a leak",
+                "confidence": "medium",
+                "severity": "info",
+                "raw_evidence": {
+                    "round_index": 1,
+                    "matched_dynamic_evidence": False,
+                    "workload_adequacy": "adequate",
+                },
+            }
+        )
+    )
+
+    judged = judge.judge_bundle(bundle)
+
+    assert judged.verdict is not None
+    assert judged.verdict.verdict.value == "false_positive"
+    assert judged.verdict.confidence.value == "low"
+
+
+def test_heuristic_judge_does_not_downgrade_on_low_coverage_dynamic_attempt() -> None:
+    judge = MemoryLeakJudge(use_llm=False)
+    bundle = _bundle()
+    bundle.candidate.evidence.append(
+        LeakEvidence.model_validate(
+            {
+                "tool": "memory.dynamic_validation_attempt",
+                "tool_kind": "orchestrator",
+                "kind": "dynamic_validation_attempt",
+                "message": "Dynamic validation round 1 did not correlate a leak",
+                "confidence": "medium",
+                "severity": "info",
+                "raw_evidence": {
+                    "round_index": 1,
+                    "matched_dynamic_evidence": False,
+                    "workload_adequacy": "unknown",
+                },
+            }
+        )
+    )
+
+    judged = judge.judge_bundle(bundle)
+
+    assert judged.verdict is not None
+    assert judged.verdict.verdict.value == "likely_leak"
+    assert "higher-coverage dynamic validation" in judged.verdict.missing_evidence

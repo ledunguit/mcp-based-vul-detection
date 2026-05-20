@@ -28,6 +28,17 @@ class FakeControlPlane:
             "scanned_file_count": 1,
             "candidate_source_file_count": 1,
             "dynamic_run_ids": [],
+            "external_dynamic_run_ids": kwargs.get("dynamic_run_ids", []),
+            "auto_dynamic_run_ids": ["run:auto-demo"] if kwargs.get("dynamic_mode") != "off" else [],
+            "dynamic_execution_plan": {
+                "requested_mode": kwargs.get("dynamic_mode", "selective"),
+                "effective_mode": kwargs.get("dynamic_mode", "selective"),
+                "tool_preference": kwargs.get("dynamic_tool_preference") or "auto",
+                "target_count": 1 if kwargs.get("dynamic_mode") != "off" else 0,
+                "targets": [],
+                "skipped_reasons": [],
+            },
+            "dynamic_run_reports": [],
             "leakguard_tool": None,
             "scan_manifest": {},
             "tool_invocations": [
@@ -345,6 +356,43 @@ def test_http_app_scan_lifecycle(tmp_path: Path) -> None:
     events = _call_app_json(app, "GET", f"/api/scans/{scan_id}/events?format=json&after=0")
     assert len(events["events"]) >= 3
     assert any(event["type"] == "tool_completed" for event in events["events"])
+
+
+def test_http_app_accepts_dynamic_orchestration_payload(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "main.c").write_text("int main(void) { return 0; }\n")
+    app = MemoryLeakApp(
+        workspace_service=WorkspaceService([str(tmp_path)]),
+        job_manager=ScanJobManager(
+            artifact_root=str(tmp_path / "artifacts"),
+            control_plane_factory=lambda: FakeControlPlane(),
+            worker_mode="thread",
+        ),
+    )
+
+    created = _call_app_json(
+        app,
+        "POST",
+        "/api/scans",
+        {
+            "workspace_path": str(repo),
+            "file_limit": 10,
+            "analysis_mode": "no_llm",
+            "dynamic_mode": "aggressive",
+            "dynamic_binary_path": str(repo / "main"),
+            "dynamic_args": "--help --demo",
+            "dynamic_timeout_sec": 90,
+            "dynamic_tool_preference": "valgrind",
+            "dynamic_run_ids": ["run:external"],
+        },
+    )
+
+    assert created["dynamic_mode"] == "aggressive"
+    assert created["dynamic_binary_path"] == str(repo / "main")
+    assert created["dynamic_args"] == ["--help", "--demo"]
+    assert created["dynamic_timeout_sec"] == 90
+    assert created["dynamic_tool_preference"] == "valgrind"
 
 
 def test_http_app_deletes_scan_and_purges_terminal_history(tmp_path: Path) -> None:

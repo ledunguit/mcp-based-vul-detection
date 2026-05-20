@@ -1,14 +1,8 @@
-export function verdictBadgeClass(verdict) {
-  if (verdict === 'confirmed_leak') {
-    return 'badge badge-error badge-soft';
-  }
-  if (verdict === 'likely_leak') {
-    return 'badge badge-warning badge-soft';
-  }
-  if (verdict === 'false_positive') {
-    return 'badge badge-success badge-soft';
-  }
-  return 'badge badge-info badge-soft';
+export function verdictTagColor(verdict) {
+  if (verdict === 'confirmed_leak') return 'red';
+  if (verdict === 'likely_leak') return 'orange';
+  if (verdict === 'false_positive') return 'green';
+  return 'blue';
 }
 
 export function formatLocation(location) {

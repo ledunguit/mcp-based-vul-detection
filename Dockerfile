@@ -18,7 +18,7 @@ COPY mcp-memory-common ./mcp-memory-common
 COPY MCP-Vul ./MCP-Vul
 COPY --from=frontend-build /workspace/MCP-Vul/frontend/dist ./MCP-Vul/frontend/dist
 
-RUN python -m pip install --no-cache-dir -e ./mcp-memory-common -e ./MCP-Vul
+RUN python -m pip install -e ./mcp-memory-common -e ./MCP-Vul
 
 WORKDIR /workspace/MCP-Vul
 

@@ -31,6 +31,48 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         f"- Tool invocations: {len(report.get('tool_invocations', []))}",
         "",
     ]
+    dynamic_plan = report.get("dynamic_execution_plan") or {}
+    if dynamic_plan or report.get("dynamic_run_ids"):
+        lines.extend(
+            [
+                "## Dynamic Validation",
+                "",
+                f"- Dynamic mode: `{report.get('dynamic_mode', dynamic_plan.get('effective_mode', 'unknown'))}`",
+                f"- Tool preference: `{report.get('dynamic_tool_preference', dynamic_plan.get('tool_preference', 'auto'))}`",
+                f"- Auto dynamic runs: {len(report.get('auto_dynamic_run_ids', []))}",
+                f"- External dynamic runs: {len(report.get('external_dynamic_run_ids', []))}",
+                f"- Planned targets: {dynamic_plan.get('target_count', 0)}",
+                f"- Discovered executables: {dynamic_plan.get('discovered_executable_count', 0)}",
+                f"- Discovered sample inputs: {dynamic_plan.get('discovered_input_count', 0)}",
+            ]
+        )
+        for note in dynamic_plan.get("planning_notes", []) or []:
+            lines.append(f"- Planning note: {note}")
+        for reason in dynamic_plan.get("skipped_reasons", []) or []:
+            lines.append(f"- Skipped reason: {reason}")
+        for target in dynamic_plan.get("targets", []) or []:
+            args = " ".join(target.get("args", []) or [])
+            lines.append(
+                "- "
+                f"Target `{target.get('target_path', 'unknown')}` via `{target.get('tool', 'unknown')}` "
+                f"score={target.get('score', 0)} strategy=`{target.get('arg_strategy', 'default')}`"
+            )
+            if args:
+                lines.append(f"- Args: `{args}`")
+            for input_path in target.get("input_paths", []) or []:
+                lines.append(f"- Input: `{input_path}`")
+        dynamic_rounds = report.get("dynamic_rounds") or []
+        if dynamic_rounds:
+            lines.append(f"- Dynamic rounds executed: {len(dynamic_rounds)}")
+            for round_item in dynamic_rounds:
+                lines.append(
+                    "- "
+                    f"Round {round_item.get('round_index', '?')}: "
+                    f"runs={len(round_item.get('new_run_ids', []))} "
+                    f"matched={len(round_item.get('matched_bundle_ids', []))} "
+                    f"attempted={len(round_item.get('attempted_bundle_ids', []))}"
+                )
+        lines.append("")
     judge_summary = report.get("judge_summary") or {}
     if judge_summary:
         lines.extend(
@@ -225,6 +267,10 @@ def build_result_snapshot(report: dict[str, Any], mode: str = "orchestrated") ->
         "verdict_counts": dict(sorted(verdict_counts.items())),
         "tool_counts": dict(sorted(tool_counts.items())),
         "dynamic_run_ids": report.get("dynamic_run_ids", []),
+        "auto_dynamic_run_ids": report.get("auto_dynamic_run_ids", []),
+        "external_dynamic_run_ids": report.get("external_dynamic_run_ids", []),
+        "dynamic_execution_plan": report.get("dynamic_execution_plan", {}),
+        "dynamic_rounds": report.get("dynamic_rounds", []),
         "leakguard_tool": report.get("leakguard_tool"),
         "scan_manifest": report.get("scan_manifest", {}),
         "tool_invocation_count": len(report.get("tool_invocations", [])),

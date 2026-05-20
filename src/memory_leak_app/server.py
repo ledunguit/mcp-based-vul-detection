@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import mimetypes
 import os
 import time
@@ -11,7 +12,16 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .jobs import DuplicateScanError, ScanDeletionError, ScanJobManager, classify_scan_failure, normalize_analysis_mode
+from .jobs import (
+    DuplicateScanError,
+    ScanDeletionError,
+    ScanJobManager,
+    classify_scan_failure,
+    normalize_analysis_mode,
+    normalize_dynamic_args,
+    normalize_dynamic_mode,
+)
+from .log_collector import get_global_collector, setup_log_collection
 from .workspaces import WorkspaceService
 
 
@@ -94,6 +104,15 @@ class MemoryLeakApp:
             return
         if path == "/api/scans":
             self._send_json(handler, {"scans": self.job_manager.list_jobs()})
+            return
+        if path == "/api/logs":
+            fmt = parse_qs(parsed.query).get("format", ["sse"])[0]
+            limit = int(parse_qs(parsed.query).get("limit", ["100"])[0] or 100)
+            if fmt == "json":
+                collector = get_global_collector()
+                self._send_json(handler, {"logs": collector.get_recent(limit=limit)})
+                return
+            self._stream_logs(handler)
             return
 
         parts = [part for part in path.split("/") if part]
@@ -191,6 +210,15 @@ class MemoryLeakApp:
                 analysis_mode=normalize_analysis_mode(payload.get("analysis_mode")),
                 build_command=payload.get("build_command") or None,
                 dynamic_run_ids=payload.get("dynamic_run_ids") or [],
+                dynamic_mode=normalize_dynamic_mode(payload.get("dynamic_mode")),
+                dynamic_binary_path=payload.get("dynamic_binary_path") or None,
+                dynamic_args=normalize_dynamic_args(payload.get("dynamic_args")),
+                dynamic_timeout_sec=(
+                    int(payload["dynamic_timeout_sec"])
+                    if payload.get("dynamic_timeout_sec") not in {None, ""}
+                    else None
+                ),
+                dynamic_tool_preference=payload.get("dynamic_tool_preference") or None,
             )
             self._send_json(handler, job.to_summary(), status=HTTPStatus.ACCEPTED)
             return
@@ -224,19 +252,57 @@ class MemoryLeakApp:
         last_event_id = 0
         heartbeat_at = time.time()
         while True:
-            events = self.job_manager.wait_for_events(scan_id, last_event_id, timeout=5.0)
-            for event in events:
-                last_event_id = max(last_event_id, int(event["event_id"]))
-                handler.wfile.write(f"id: {event['event_id']}\n".encode("utf-8"))
-                handler.wfile.write(f"data: {json.dumps(event, ensure_ascii=True)}\n\n".encode("utf-8"))
-                handler.wfile.flush()
-            job = self.job_manager.get_job(scan_id)
-            if job.status in {"completed", "failed", "cancelled"} and last_event_id >= len(job.events):
+            try:
+                events = self.job_manager.wait_for_events(scan_id, last_event_id, timeout=5.0)
+                for event in events:
+                    last_event_id = max(last_event_id, int(event["event_id"]))
+                    handler.wfile.write(f"id: {event['event_id']}\n".encode("utf-8"))
+                    handler.wfile.write(f"data: {json.dumps(event, ensure_ascii=True)}\n\n".encode("utf-8"))
+                    handler.wfile.flush()
+                job = self.job_manager.get_job(scan_id)
+                if job.status in {"completed", "failed", "cancelled"} and last_event_id >= len(job.events):
+                    return
+                if time.time() - heartbeat_at > 15:
+                    handler.wfile.write(b": heartbeat\n\n")
+                    handler.wfile.flush()
+                    heartbeat_at = time.time()
+            except (BrokenPipeError, ConnectionResetError):
                 return
-            if time.time() - heartbeat_at > 15:
-                handler.wfile.write(b": heartbeat\n\n")
-                handler.wfile.flush()
-                heartbeat_at = time.time()
+
+    def _stream_logs(self, handler: BaseHTTPRequestHandler) -> None:
+        """Stream server logs in real-time using SSE."""
+        try:
+            handler.send_response(HTTPStatus.OK)
+            handler.send_header("Content-Type", "text/event-stream")
+            handler.send_header("Cache-Control", "no-cache")
+            handler.send_header("Connection", "keep-alive")
+            handler.end_headers()
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
+        collector = get_global_collector()
+        last_event_id = 0
+        heartbeat_at = time.time()
+
+        while True:
+            try:
+                logs, current_event_id = collector.wait_for_new_entries(last_event_id, timeout=5.0)
+                if current_event_id > last_event_id:
+                    for log_entry in logs:
+                        if log_entry["timestamp"] > (last_event_id / 1000.0):
+                            handler.wfile.write(f"id: {current_event_id}\n".encode("utf-8"))
+                            handler.wfile.write(f"data: {json.dumps(log_entry, ensure_ascii=True)}\n\n".encode("utf-8"))
+                            handler.wfile.flush()
+                    last_event_id = current_event_id
+
+                if time.time() - heartbeat_at > 15:
+                    handler.wfile.write(b": heartbeat\n\n")
+                    handler.wfile.flush()
+                    heartbeat_at = time.time()
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except Exception:
+                return
 
     def _send_report(self, handler: BaseHTTPRequestHandler, scan_id: str, fmt: str) -> None:
         job = self.job_manager.get_job(scan_id)
@@ -331,12 +397,34 @@ class MemoryLeakApp:
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8090) -> None:
+    # Set up logging with collector for ALL modules
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        force=True  # Override any existing config
+    )
+
+    # Setup log collection on root logger to capture everything
+    root_logger = logging.getLogger()
+    setup_log_collection(logger=root_logger, level=logging.DEBUG)
+
+    # Also setup for specific important loggers
+    for logger_name in ['src.memory_leak', 'src.mcp_protocol', 'src.memory_leak_app']:
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(logging.DEBUG)
+
+    logger = logging.getLogger(__name__)
+    logger.info(f"Starting Memory Leak Investigator UI on http://{host}:{port}")
+    logger.info("Log collection enabled for all MCP-Vul modules")
+
     app = MemoryLeakApp()
     server = ThreadingHTTPServer((host, port), app.make_handler())
     print(f"Memory Leak Investigator UI: http://{host}:{port}")
+    print(f"Logs available at: http://{host}:{port}/logs")
     try:
         server.serve_forever()
     finally:
+        logger.info("Shutting down server")
         app.job_manager.close()
         server.server_close()
 

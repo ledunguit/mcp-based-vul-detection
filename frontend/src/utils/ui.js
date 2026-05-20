@@ -5,6 +5,21 @@ export function formatClock(epochSeconds) {
   return `${time}.${millis}`;
 }
 
+export function formatRelativeTime(epochSeconds) {
+  if (!epochSeconds) {
+    return 'just now';
+  }
+  const deltaSeconds = Math.max(0, Math.round(Date.now() / 1000 - epochSeconds));
+  if (deltaSeconds < 5) return 'just now';
+  if (deltaSeconds < 60) return `${deltaSeconds}s ago`;
+  const minutes = Math.floor(deltaSeconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
 export function describeMode(data) {
   const mode = data?.analysis_mode || 'no_llm';
   const judge = data?.judge_summary || {};
@@ -69,30 +84,10 @@ export function describeEvent(event) {
   return lines;
 }
 
-export function badgeClass(status) {
+export function tagColor(status) {
   const value = status || 'idle';
-  if (value === 'completed') {
-    return 'badge badge-success badge-soft';
-  }
-  if (value === 'failed') {
-    return 'badge badge-error badge-soft';
-  }
-  if (value === 'cancelled') {
-    return 'badge badge-warning badge-soft';
-  }
-  return 'badge badge-info badge-soft';
-}
-
-export function cardBorderClass(status) {
-  const value = status || 'idle';
-  if (value === 'completed') {
-    return 'border-success/40';
-  }
-  if (value === 'failed') {
-    return 'border-error/40';
-  }
-  if (value === 'cancelled') {
-    return 'border-warning/40';
-  }
-  return 'border-info/40';
+  if (value === 'completed') return 'success';
+  if (value === 'failed') return 'error';
+  if (value === 'cancelled') return 'warning';
+  return 'processing';
 }

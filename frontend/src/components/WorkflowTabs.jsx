@@ -1,24 +1,76 @@
-import { NavLink } from 'react-router-dom';
+import { ApartmentOutlined } from "@ant-design/icons";
+import { FileSearch2, FolderGit2, History, Terminal } from "lucide-react";
+import { Flex, Menu } from "antd";
+import { useLocation, useNavigate } from "react-router-dom";
 
-const WORKFLOW_TABS = [
-  { to: '/setup', label: 'Setup', hint: 'Configure target and launch' },
-  { to: '/activity', label: 'Activity', hint: 'Follow logs and scan history' },
-  { to: '/report', label: 'Report', hint: 'Inspect artifacts and verdicts' },
+export const WORKFLOW_TABS = [
+  {
+    to: "/setup",
+    label: "Setup",
+    icon: <FolderGit2 size={16} strokeWidth={2.1} />,
+  },
+  {
+    to: "/investigations",
+    label: "Investigations",
+    icon: <History size={16} strokeWidth={2.1} />,
+  },
+  {
+    to: "/activity",
+    label: "Execution Graph",
+    icon: <ApartmentOutlined size={16} strokeWidth={2.1} />,
+  },
+  {
+    to: "/report",
+    label: "Report",
+    icon: <FileSearch2 size={16} strokeWidth={2.1} />,
+  },
+  {
+    to: "/logs",
+    label: "Logs",
+    icon: <Terminal size={16} strokeWidth={2.1} />,
+  },
 ];
 
-export function WorkflowTabs() {
+function buildMenuLabel(tab, compact, collapsed) {
+  if (compact) {
+    return tab.label;
+  }
+
+  if (collapsed) {
+    return null;
+  }
+
   return (
-    <div className="tabs tabs-boxed w-full bg-base-100/80 p-1 shadow-md">
-      {WORKFLOW_TABS.map((tab) => (
-        <NavLink
-          key={tab.to}
-          to={tab.to}
-          className={({ isActive }) => `tab h-auto flex-1 gap-1 py-3 ${isActive ? 'tab-active' : ''}`}
-        >
-          <span className="text-sm font-bold lg:text-base">{tab.label}</span>
-          <span className="hidden text-[11px] text-base-content/60 lg:block">{tab.hint}</span>
-        </NavLink>
-      ))}
-    </div>
+    <Flex align="center" style={{ minHeight: 22 }}>
+      <span>{tab.label}</span>
+    </Flex>
+  );
+}
+
+export function WorkflowTabs({ compact = false, collapsed = false }) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const selectedKey =
+    WORKFLOW_TABS.find((tab) => location.pathname.startsWith(tab.to))?.to ||
+    "/setup";
+
+  return (
+    <Menu
+      mode={compact ? "horizontal" : "inline"}
+      selectedKeys={[selectedKey]}
+      inlineCollapsed={!compact && collapsed}
+      onClick={({ key }) => navigate(key)}
+      items={WORKFLOW_TABS.map((tab) => ({
+        key: tab.to,
+        icon: <span className="app-shell-menu-icon">{tab.icon}</span>,
+        label: buildMenuLabel(tab, compact, collapsed),
+        title: tab.label,
+      }))}
+      style={{
+        borderInlineEnd: 0,
+        background: "transparent",
+      }}
+      className="app-shell-menu"
+    />
   );
 }

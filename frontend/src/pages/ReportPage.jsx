@@ -5,7 +5,7 @@ export function ReportPage() {
   const { consoleState, handleReloadStructured, handleLoadReport, handleOpenHtml } = useReportPageActions();
 
   return (
-    <section className="grid gap-4">
+    <div style={{ display: 'grid', gap: 16 }}>
       <ReportControlsCard
         selectedScan={consoleState.selectedScan}
         reportData={consoleState.reportData}
@@ -14,6 +14,6 @@ export function ReportPage() {
         onLoadReport={handleLoadReport}
         onOpenHtml={handleOpenHtml}
       />
-    </section>
+    </div>
   );
 }
