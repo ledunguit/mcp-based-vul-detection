@@ -26,7 +26,8 @@ export function describeMode(data) {
   if (mode === 'llm_assisted') {
     const effective = judge.effective_mode || 'pending';
     const provider = judge.provider ? ` via ${judge.provider}` : '';
-    return `Mode: llm_assisted | Orchestration: deterministic_policy | Judge: ${effective}${provider}`;
+    const model = judge.model ? ` (${judge.model})` : '';
+    return `Mode: llm_assisted | Orchestration: deterministic_policy | Judge: ${effective}${provider}${model}`;
   }
   return 'Mode: no_llm | Orchestration: deterministic_policy | Judge: heuristic';
 }
@@ -59,7 +60,9 @@ export function describeEvent(event) {
   if (event.duration_ms !== undefined) {
     lines.push(`  duration_ms: ${event.duration_ms}`);
   }
-  if (event.bundle_count !== undefined && event.bundle_count !== null) {
+  if (event.finding_count !== undefined && event.finding_count !== null) {
+    lines.push(`  findings: ${event.finding_count}`);
+  } else if (event.bundle_count !== undefined && event.bundle_count !== null) {
     lines.push(`  bundles: ${event.bundle_count}`);
   }
   if (event.candidate_count !== undefined && event.candidate_count !== null) {

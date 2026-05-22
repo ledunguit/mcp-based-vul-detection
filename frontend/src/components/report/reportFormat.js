@@ -18,10 +18,10 @@ export function formatLocation(location) {
   return location.file || 'unknown';
 }
 
-export function buildVerdictCounts(bundles) {
+export function buildVerdictCounts(findings) {
   const counts = {};
-  for (const bundle of bundles) {
-    const verdict = bundle?.verdict?.verdict || 'unjudged';
+  for (const finding of findings) {
+    const verdict = finding?.verdict?.verdict || 'unjudged';
     counts[verdict] = (counts[verdict] || 0) + 1;
   }
   return counts;

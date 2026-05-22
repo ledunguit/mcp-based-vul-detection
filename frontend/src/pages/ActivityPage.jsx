@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useParams } from 'react-router-dom';
 
 import { TerminalLogCard } from '../components/TerminalLogCard';
 import { WorkflowCanvasBoard } from '../components/WorkflowCanvasBoard';
@@ -14,6 +15,7 @@ function clamp(value, min, max) {
 }
 
 export function ActivityPage() {
+  const { scanId } = useParams();
   const {
     consoleState,
     handleCancelScan,
@@ -22,10 +24,18 @@ export function ActivityPage() {
     handleExportLog,
     formatEvent,
   } = useActivityPageActions();
+  const selectedScanId = consoleState.selectedScan?.scan_id;
   const shellRef = useRef(null);
   const resizeStateRef = useRef(null);
   const [terminalHeight, setTerminalHeight] = useState(TERMINAL_DEFAULT_HEIGHT);
   const [terminalCollapsed, setTerminalCollapsed] = useState(true);
+
+  useEffect(() => {
+    if (!scanId || selectedScanId === scanId) {
+      return;
+    }
+    consoleState.ensureScanLoaded(scanId).catch(() => undefined);
+  }, [scanId, selectedScanId]);
 
   const getMaxTerminalHeight = useCallback(() => {
     const shellHeight = shellRef.current?.getBoundingClientRect().height;

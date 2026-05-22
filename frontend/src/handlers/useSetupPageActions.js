@@ -9,13 +9,13 @@ export function useSetupPageActions() {
   async function handleStartScan() {
     const result = await consoleState.startScan();
     if (result) {
-      navigate('/activity');
+      navigate(`/activity/${result.scan_id}`);
     }
   }
 
   return {
     consoleState,
     handleStartScan,
-    handleGoActivity: () => navigate('/activity'),
+    handleGoActivity: () => navigate(consoleState.selectedScan?.scan_id ? `/activity/${consoleState.selectedScan.scan_id}` : '/activity'),
   };
 }

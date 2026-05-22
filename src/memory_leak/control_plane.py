@@ -210,6 +210,7 @@ class MemoryLeakControlPlane:
             "discovered_executable_count": 0,
             "discovered_input_count": 0,
         }
+        reported_dynamic_plan: dict[str, Any] = dict(latest_dynamic_plan_report)
 
         for round_index in range(1, round_budget + 1):
             self._emit(
@@ -227,8 +228,11 @@ class MemoryLeakControlPlane:
                 timeout_sec=dynamic_timeout_sec,
                 round_index=round_index,
                 exclude_target_paths=executed_target_paths,
+                dynamic_build_result=dynamic_build_result,
             )
             latest_dynamic_plan_report = dynamic_plan.to_report()
+            if dynamic_plan.targets or reported_dynamic_plan.get("target_count", 0) == 0:
+                reported_dynamic_plan = latest_dynamic_plan_report
             self._emit(
                 progress_callback,
                 "dynamic_plan_ready",
@@ -340,7 +344,7 @@ class MemoryLeakControlPlane:
         report["dynamic_run_ids"] = merged_dynamic_run_ids
         report["external_dynamic_run_ids"] = dynamic_run_ids
         report["auto_dynamic_run_ids"] = auto_dynamic_run_ids
-        report["dynamic_execution_plan"] = latest_dynamic_plan_report
+        report["dynamic_execution_plan"] = reported_dynamic_plan
         report["dynamic_rounds"] = dynamic_rounds
         report["dynamic_run_reports"] = dynamic_run_reports
         report["dynamic_mode"] = latest_dynamic_plan_report.get("effective_mode")

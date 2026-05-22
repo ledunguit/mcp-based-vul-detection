@@ -54,11 +54,14 @@ export function SetupForm({
 
   return (
     <AppCard
-      title="Start a scan"
-      subtitle="Choose workspace and mode. Open advanced only if needed."
-      extra={<Tag color="processing">{loadingWorkspaces ? 'Loading' : `${workspaces.length} mounted`}</Tag>}
       bodyGap={20}
+      styles={{ header: { display: 'none' } }}
     >
+      <Flex align="center" justify="space-between" gap={12} wrap>
+        <Text type="secondary">Choose workspace and mode. Open advanced only if needed.</Text>
+        <Tag color="processing">{loadingWorkspaces ? 'Loading' : `${workspaces.length} mounted`}</Tag>
+      </Flex>
+
       <Form layout="vertical">
         <Flex vertical gap={20}>
           <Flex vertical gap={12}>

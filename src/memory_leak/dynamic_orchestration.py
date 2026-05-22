@@ -152,6 +152,8 @@ class DynamicValidationPlan:
     discovered_executable_count: int = 0
     discovered_input_count: int = 0
     planning_notes: list[str] = field(default_factory=list)
+    built_target_count: int = 0
+    runner_tool: str | None = None
 
     def to_report(self) -> dict[str, object]:
         return {
@@ -162,6 +164,8 @@ class DynamicValidationPlan:
             "target_count": len(self.targets),
             "discovered_executable_count": self.discovered_executable_count,
             "discovered_input_count": self.discovered_input_count,
+            "built_target_count": self.built_target_count,
+            "runner_tool": self.runner_tool,
             "targets": [target.to_report() for target in self.targets],
             "skipped_reasons": list(self.skipped_reasons),
             "planning_notes": list(self.planning_notes),
@@ -195,6 +199,7 @@ class DynamicValidationPlanner:
         timeout_sec: int | None = None,
         round_index: int = 1,
         exclude_target_paths: set[str] | None = None,
+        dynamic_build_result: dict[str, object] | None = None,
     ) -> DynamicValidationPlan:
         plan = DynamicValidationPlan(
             requested_mode=self.dynamic_mode,
@@ -206,11 +211,12 @@ class DynamicValidationPlanner:
             plan.skipped_reasons.append("Dynamic validation mode is disabled.")
             return plan
 
-        runner_tool = self._select_runner_tool()
+        runner_tool = self._select_runner_tool(dynamic_build_result=dynamic_build_result)
         if runner_tool is None:
             plan.skipped_reasons.append("No dynamic runner tool is available in the connected MCP servers.")
             plan.effective_mode = DynamicAnalysisMode.OFF.value
             return plan
+        plan.runner_tool = runner_tool
 
         ranked_bundles = self._rank_bundles_for_dynamic(bundles)
         if not ranked_bundles:
@@ -218,7 +224,12 @@ class DynamicValidationPlanner:
             return plan
 
         timeout_budget = self._normalize_timeout(timeout_sec)
-        discovered_targets = self._discover_targets(repo_root=repo_root, binary_hint=binary_hint)
+        discovered_targets = self._discover_targets(
+            repo_root=repo_root,
+            binary_hint=binary_hint,
+            dynamic_build_result=dynamic_build_result,
+        )
+        plan.built_target_count = len(self._built_target_candidates(dynamic_build_result))
         excluded_targets = {str(Path(path).resolve()) for path in (exclude_target_paths or set())}
         if excluded_targets:
             discovered_targets = [
@@ -283,7 +294,7 @@ class DynamicValidationPlanner:
 
         return plan
 
-    def _select_runner_tool(self) -> str | None:
+    def _select_runner_tool(self, dynamic_build_result: dict[str, object] | None = None) -> str | None:
         if self.tool_preference == "valgrind" and "valgrind.analyze_memcheck" in self.available_tools:
             return "valgrind.analyze_memcheck"
         if self.tool_preference == "lsan" and "lsan.run" in self.available_tools:
@@ -291,9 +302,16 @@ class DynamicValidationPlanner:
         if self.tool_preference == "asan" and "asan.run" in self.available_tools:
             return "asan.run"
 
-        # Prefer LSan in auto mode when available because it can validate more
-        # workloads quickly on sanitizer-instrumented binaries.
-        for tool_name in ("lsan.run", "valgrind.analyze_memcheck", "asan.run"):
+        has_sanitized_target = any(
+            item.get("sanitizer_instrumented")
+            for item in self._built_target_candidates(dynamic_build_result)
+        )
+        auto_order = (
+            ("lsan.run", "asan.run", "valgrind.analyze_memcheck")
+            if has_sanitized_target
+            else ("valgrind.analyze_memcheck", "lsan.run", "asan.run")
+        )
+        for tool_name in auto_order:
             if tool_name in self.available_tools:
                 return tool_name
         return None
@@ -353,11 +371,28 @@ class DynamicValidationPlanner:
             if evidence.tool_kind.value == "orchestrator" and evidence.kind == "dynamic_validation_attempt"
         )
 
-    def _discover_targets(self, repo_root: Path, binary_hint: str | None) -> list[tuple[int, Path, str]]:
+    def _discover_targets(
+        self,
+        repo_root: Path,
+        binary_hint: str | None,
+        dynamic_build_result: dict[str, object] | None = None,
+    ) -> list[tuple[int, Path, str]]:
         if binary_hint:
             hinted = self._resolve_hint_path(repo_root, binary_hint)
             if hinted.exists() and hinted.is_file() and os.access(hinted, os.X_OK) and self._is_supported_dynamic_target(hinted):
                 return [(10_000, hinted, "user_hint")]
+
+        built_targets = self._built_target_candidates(dynamic_build_result)
+        if built_targets:
+            ranked_built_targets: list[tuple[int, Path, str]] = []
+            for item in built_targets:
+                path = Path(str(item["path"])).expanduser().resolve()
+                if not path.exists() or not path.is_file() or not os.access(path, os.X_OK):
+                    continue
+                ranked_built_targets.append((20_000 + self._executable_rank(repo_root, path), path, "dynamic_build"))
+            if ranked_built_targets:
+                ranked_built_targets.sort(key=lambda item: (-item[0], str(item[1])))
+                return ranked_built_targets
 
         candidates: list[tuple[int, Path]] = []
         for dirpath, dirnames, filenames in os.walk(repo_root):
@@ -384,6 +419,21 @@ class DynamicValidationPlanner:
 
         candidates.sort(key=lambda item: (-item[0], str(item[1])))
         return [(score, path, "auto_discovered") for score, path in candidates]
+
+    def _built_target_candidates(self, dynamic_build_result: dict[str, object] | None) -> list[dict[str, object]]:
+        if not dynamic_build_result:
+            return []
+        raw_targets = dynamic_build_result.get("built_targets")
+        if not isinstance(raw_targets, list):
+            return []
+        candidates: list[dict[str, object]] = []
+        for item in raw_targets:
+            if not isinstance(item, dict):
+                continue
+            if not item.get("path") or not item.get("executable") or not item.get("compatible"):
+                continue
+            candidates.append(item)
+        return candidates
 
     def _discover_input_candidates(self, repo_root: Path) -> list[Path]:
         candidates: list[tuple[int, Path]] = []

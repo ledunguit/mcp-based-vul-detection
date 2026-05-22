@@ -31,6 +31,24 @@ export const WORKFLOW_TABS = [
   },
 ];
 
+function extractScanId(pathname) {
+  const match = pathname.match(/^\/(?:activity|report)\/([^/]+)$/);
+  return match ? match[1] : null;
+}
+
+function resolveTabPath(tab, scanId) {
+  if (!tab) {
+    return "/setup";
+  }
+  if (!scanId) {
+    return tab.to;
+  }
+  if (tab.to === "/activity" || tab.to === "/report") {
+    return `${tab.to}/${scanId}`;
+  }
+  return tab.to;
+}
+
 function buildMenuLabel(tab, compact, collapsed) {
   if (compact) {
     return tab.label;
@@ -47,9 +65,10 @@ function buildMenuLabel(tab, compact, collapsed) {
   );
 }
 
-export function WorkflowTabs({ compact = false, collapsed = false }) {
+export function WorkflowTabs({ compact = false, collapsed = false, activeScanId = null }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const scanId = activeScanId || extractScanId(location.pathname);
   const selectedKey =
     WORKFLOW_TABS.find((tab) => location.pathname.startsWith(tab.to))?.to ||
     "/setup";
@@ -58,8 +77,8 @@ export function WorkflowTabs({ compact = false, collapsed = false }) {
     <Menu
       mode={compact ? "horizontal" : "inline"}
       selectedKeys={[selectedKey]}
-      inlineCollapsed={!compact && collapsed}
-      onClick={({ key }) => navigate(key)}
+      {...(!compact && { inlineCollapsed: collapsed })}
+      onClick={({ key }) => navigate(resolveTabPath(WORKFLOW_TABS.find((tab) => tab.to === key), scanId))}
       items={WORKFLOW_TABS.map((tab) => ({
         key: tab.to,
         icon: <span className="app-shell-menu-icon">{tab.icon}</span>,

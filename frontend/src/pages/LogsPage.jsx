@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { Download, Pause, Play, Trash2 } from 'lucide-react';
 import { Button, Checkbox, Empty, Flex, Input, Select, Space, Tag, Typography, theme } from 'antd';
 
 import { AppCard } from '../components/ui';
+import { useLogsStore } from '../stores/logsStore';
 
 const { Text } = Typography;
 
@@ -37,22 +38,31 @@ function getLevelTextColor(level) {
 }
 
 export function LogsPage() {
-  const [logs, setLogs] = useState([]);
-  const [isPaused, setIsPaused] = useState(false);
-  const [autoScroll, setAutoScroll] = useState(true);
-  const [filter, setFilter] = useState('');
-  const [levelFilter, setLevelFilter] = useState('ALL');
   const logsEndRef = useRef(null);
   const eventSourceRef = useRef(null);
   const { token } = theme.useToken();
+  const logs = useLogsStore((state) => state.logs);
+  const isPaused = useLogsStore((state) => state.isPaused);
+  const autoScroll = useLogsStore((state) => state.autoScroll);
+  const filter = useLogsStore((state) => state.filter);
+  const levelFilter = useLogsStore((state) => state.levelFilter);
+  const setPaused = useLogsStore((state) => state.setPaused);
+  const setAutoScroll = useLogsStore((state) => state.setAutoScroll);
+  const setFilter = useLogsStore((state) => state.setFilter);
+  const setLevelFilter = useLogsStore((state) => state.setLevelFilter);
+  const clearLogs = useLogsStore((state) => state.clearLogs);
+  const appendLog = useLogsStore((state) => state.appendLog);
+  const loadInitialLogs = useLogsStore((state) => state.loadInitialLogs);
+  const filteredLogs = useMemo(() => {
+    return logs.filter((log) => {
+      const matchesText = filter === '' || log.message.toLowerCase().includes(filter.toLowerCase());
+      const matchesLevel = levelFilter === 'ALL' || log.level === levelFilter;
+      return matchesText && matchesLevel;
+    });
+  }, [filter, levelFilter, logs]);
 
   useEffect(() => {
-    fetch('/api/logs?format=json&limit=500')
-      .then((response) => response.json())
-      .then((data) => {
-        setLogs(data.logs || []);
-      })
-      .catch((error) => console.error('Failed to fetch initial logs:', error));
+    loadInitialLogs().catch((error) => console.error('Failed to fetch initial logs:', error));
 
     if (!isPaused) {
       const eventSource = new EventSource('/api/logs?format=sse');
@@ -61,7 +71,7 @@ export function LogsPage() {
       eventSource.onmessage = (event) => {
         try {
           const logEntry = JSON.parse(event.data);
-          setLogs((current) => [...current, logEntry]);
+          appendLog(logEntry);
         } catch (error) {
           console.error('Failed to parse log entry:', error);
         }
@@ -78,23 +88,13 @@ export function LogsPage() {
     }
 
     return undefined;
-  }, [isPaused]);
+  }, [appendLog, isPaused, loadInitialLogs]);
 
   useEffect(() => {
     if (autoScroll && logsEndRef.current) {
       logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [logs, autoScroll]);
-
-  const filteredLogs = logs.filter((log) => {
-    const matchesText = filter === '' || log.message.toLowerCase().includes(filter.toLowerCase());
-    const matchesLevel = levelFilter === 'ALL' || log.level === levelFilter;
-    return matchesText && matchesLevel;
-  });
-
-  function clearLogs() {
-    setLogs([]);
-  }
 
   function downloadLogs() {
     const logText = logs
@@ -117,30 +117,29 @@ export function LogsPage() {
 
   return (
     <AppCard
-      title="Server Logs"
-      subtitle="Live stream of backend activity with filter and download controls."
-      titleLevel={3}
       style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
       bodyStyle={{ flex: 1, minHeight: 0, overflow: 'hidden' }}
-      extra={
+      styles={{ header: { display: 'none' } }}
+    >
+      <Flex justify="space-between" gap={12} wrap align="center">
+        <Text type="secondary">Live stream of backend activity with filter and download controls.</Text>
         <Space wrap>
           <Button
             size="small"
-            type="text"
             icon={isPaused ? <Play size={16} /> : <Pause size={16} />}
-            onClick={() => setIsPaused((current) => !current)}
+            onClick={() => setPaused(!isPaused)}
           >
             {isPaused ? 'Resume' : 'Pause'}
           </Button>
-          <Button size="small" type="text" icon={<Download size={16} />} onClick={downloadLogs}>
+          <Button size="small" icon={<Download size={16} />} onClick={downloadLogs}>
             Download
           </Button>
-          <Button size="small" type="text" icon={<Trash2 size={16} />} onClick={clearLogs}>
+          <Button size="small" danger type="primary" icon={<Trash2 size={16} />} onClick={clearLogs}>
             Clear
           </Button>
         </Space>
-      }
-    >
+      </Flex>
+
       <Flex gap={12} wrap align="center">
         <Input
           placeholder="Filter logs..."

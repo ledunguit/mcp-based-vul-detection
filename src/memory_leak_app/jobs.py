@@ -358,6 +358,7 @@ class ScanJob:
             "remediation": self.remediation,
             "error_detail": self.error_detail,
             "bundle_count": (self.report or {}).get("bundle_count"),
+            "finding_count": (self.report or {}).get("finding_count"),
             "candidate_count": (self.report or {}).get("candidate_count"),
             "evidence_count": (self.report or {}).get("evidence_count"),
             "judge_summary": (self.report or {}).get("judge_summary"),
@@ -824,10 +825,11 @@ class ScanJobManager:
         )
 
     def _summary_report_stub(self, summary: dict[str, Any]) -> dict[str, Any] | None:
-        if all(summary.get(key) is None for key in ("bundle_count", "candidate_count", "evidence_count", "judge_summary")):
+        if all(summary.get(key) is None for key in ("bundle_count", "finding_count", "candidate_count", "evidence_count", "judge_summary")):
             return None
         return {
             "bundle_count": summary.get("bundle_count"),
+            "finding_count": summary.get("finding_count"),
             "candidate_count": summary.get("candidate_count"),
             "evidence_count": summary.get("evidence_count"),
             "judge_summary": summary.get("judge_summary"),
@@ -858,19 +860,23 @@ class ScanJobManager:
             self._write_status_locked(job)
 
     def _ensure_report_loaded_locked(self, job: ScanJob) -> None:
+        needs_full_report = job.report is None or set(job.report.keys()).issubset(
+            {"bundle_count", "finding_count", "candidate_count", "evidence_count", "judge_summary", "analysis_mode"}
+        )
+        if not needs_full_report:
+            return
+        stored_report = self._store.load_report(job.scan_id)
+        if stored_report is not None:
+            job.report = self._normalize_report_payload(stored_report)
+            return
         report_path = (job.artifacts or {}).get("json")
         if not report_path:
             return
         report_file = Path(report_path)
         if not report_file.exists():
             return
-        needs_full_report = job.report is None or set(job.report.keys()).issubset(
-            {"bundle_count", "candidate_count", "evidence_count", "judge_summary", "analysis_mode"}
-        )
-        if not needs_full_report:
-            return
         try:
-            job.report = json.loads(report_file.read_text(encoding="utf-8"))
+            job.report = self._normalize_report_payload(json.loads(report_file.read_text(encoding="utf-8")))
         except Exception:
             return
 
@@ -934,6 +940,7 @@ class ScanJobManager:
 
     def _complete_job_locked(self, job: ScanJob, report: dict[str, Any]) -> None:
         artifacts = self._write_report_artifacts(job, report)
+        self._store.save_report(job.scan_id, report)
         job.status = "completed"
         job.finished_at = time.time()
         job.updated_at = job.finished_at
@@ -950,6 +957,7 @@ class ScanJobManager:
             message="Scan completed",
             artifacts=artifacts,
             bundle_count=report.get("bundle_count"),
+            finding_count=report.get("finding_count"),
             candidate_count=report.get("candidate_count"),
             evidence_count=report.get("evidence_count"),
         )
@@ -1061,3 +1069,14 @@ class ScanJobManager:
             "reporting": "reporting",
         }
         return mapping.get(phase, "starting")
+
+    def _normalize_report_payload(self, report: dict[str, Any]) -> dict[str, Any]:
+        findings = report.get("findings")
+        if not findings and report.get("bundles"):
+            findings = list(report.get("bundles") or [])
+            report["findings"] = findings
+        if findings and "bundles" not in report:
+            report["bundles"] = findings
+        if findings is not None and "finding_count" not in report:
+            report["finding_count"] = len(findings)
+        return report

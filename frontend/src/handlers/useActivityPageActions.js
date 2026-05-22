@@ -10,7 +10,7 @@ export function useActivityPageActions() {
   async function handleSelectScan(scan) {
     const result = await consoleState.openScan(scan.scan_id, scan);
     if (result) {
-      navigate('/activity');
+      navigate(`/activity/${scan.scan_id}`);
     }
   }
 
@@ -23,7 +23,7 @@ export function useActivityPageActions() {
     handleRequestDeleteTerminalScans: () => consoleState.requestDeleteTerminalScans(),
     handleCloseDeleteDialog: () => consoleState.closeDeleteDialog(),
     handleConfirmDeleteDialog: () => consoleState.confirmDeleteDialog(),
-    handleOpenReport: () => navigate('/report'),
+    handleOpenReport: () => navigate(consoleState.selectedScan?.scan_id ? `/report/${consoleState.selectedScan.scan_id}` : '/report'),
     handleReloadLog: () =>
       consoleState.selectedScan
         ? consoleState.loadEventHistory(consoleState.selectedScan.scan_id).catch(() => undefined)

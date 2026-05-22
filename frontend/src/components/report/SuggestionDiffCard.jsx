@@ -1,9 +1,6 @@
-import { Collapse, Space, Tag, Typography, theme } from 'antd';
+import { Collapse, Typography, theme } from 'antd';
 
-import { formatLocation } from './reportFormat';
-import { AppCard } from '../ui';
-
-const { Paragraph, Text } = Typography;
+const { Text } = Typography;
 
 function buildSnippetRows(snippet, startLine) {
   if (!snippet) {
@@ -26,14 +23,15 @@ function SnippetPanel({ title, tone, snippet, startLine }) {
         background: tone.background,
         borderRadius: 12,
         overflow: 'hidden',
+        minWidth: 0,
       }}
     >
       <div style={{ borderBottom: `1px solid ${tone.border}`, padding: '10px 14px' }}>
         <Text strong>{title}</Text>
       </div>
       {rows.length ? (
-        <div style={{ overflow: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'SFMono-Regular, Consolas, Menlo, monospace', fontSize: 13 }}>
+        <div style={{ overflow: 'auto', maxHeight: 280 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', fontFamily: 'SFMono-Regular, Consolas, Menlo, monospace', fontSize: 13 }}>
             <tbody>
               {rows.map((row) => (
                 <tr key={`${title}-${row.number}-${row.content}`}>
@@ -57,41 +55,61 @@ export function SuggestionDiffCard({ suggestion }) {
   const { token } = theme.useToken();
 
   return (
-    <AppCard size="small" bodyGap={16}>
-      <Space align="start" justify="space-between" style={{ width: '100%' }} wrap>
-        <Space direction="vertical" size={8} style={{ maxWidth: '100%' }}>
-          <Text strong>{suggestion.summary}</Text>
-          <Text type="secondary">{suggestion.rationale}</Text>
-        </Space>
-
-        {suggestion.target_location ? (
-          <AppCard
-            size="small"
-            bodyGap={4}
-            style={{
-              background: token.colorPrimaryBg,
-              borderColor: token.colorPrimaryBorder,
-              minWidth: 180,
-            }}
-          >
-            <Space direction="vertical" size={4}>
-              <Tag color="processing">Patch Target</Tag>
-              <Paragraph code style={{ marginBottom: 0 }}>
-                {formatLocation(suggestion.target_location)}
-              </Paragraph>
-            </Space>
-          </AppCard>
-        ) : null}
-      </Space>
+    <div
+      style={{
+        padding: '16px',
+        borderRadius: token.borderRadius,
+        border: `1px solid ${token.colorBorderSecondary}`,
+        background: token.colorBgContainer,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 14,
+        minWidth: 0,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+        }}
+      >
+        <Text strong style={{ fontSize: 14, lineHeight: 1.5 }}>{suggestion.summary}</Text>
+        <div
+          style={{
+            padding: '12px 14px',
+            borderRadius: token.borderRadiusSM,
+            background: token.colorBgLayout,
+            border: `1px solid ${token.colorBorderSecondary}`,
+            minWidth: 0,
+          }}
+        >
+          <Text strong style={{ display: 'block', fontSize: 12, marginBottom: 6 }}>
+            Why this change
+          </Text>
+          <Text style={{ fontSize: 13, lineHeight: 1.7, color: token.colorText }}>
+            {suggestion.rationale}
+          </Text>
+        </div>
+      </div>
 
       {suggestion.code_change_hint ? (
-        <AppCard size="small" bodyGap={0}>
-          <Text>{suggestion.code_change_hint}</Text>
-        </AppCard>
+        <div
+          style={{
+            padding: '10px 14px',
+            borderRadius: token.borderRadiusSM,
+            background: token.colorBgLayout,
+            border: `1px solid ${token.colorBorderSecondary}`,
+            minWidth: 0,
+          }}
+        >
+          <Text strong style={{ display: 'block', fontSize: 12, marginBottom: 6 }}>Recommended change</Text>
+          <Text style={{ fontSize: 13 }}>{suggestion.code_change_hint}</Text>
+        </div>
       ) : null}
 
       {suggestion.before_snippet || suggestion.after_snippet ? (
-        <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
+        <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', minWidth: 0 }}>
           <SnippetPanel
             title="Current"
             tone={{ border: token.colorErrorBorder, background: token.colorErrorBg }}
@@ -115,7 +133,17 @@ export function SuggestionDiffCard({ suggestion }) {
               key: 'diff',
               label: 'Unified diff',
               children: (
-                <AppCard size="small" bodyGap={0} style={{ background: token.colorBgLayout }}>
+                <div
+                  style={{
+                    padding: '12px',
+                    borderRadius: token.borderRadiusSM,
+                    background: token.colorBgLayout,
+                    border: `1px solid ${token.colorBorderSecondary}`,
+                    overflow: 'auto',
+                    maxHeight: 320,
+                    minWidth: 0,
+                  }}
+                >
                   {suggestion.unified_diff.split('\n').map((line, index) => (
                     <pre
                       key={`${suggestion.summary}-${index}`}
@@ -124,6 +152,7 @@ export function SuggestionDiffCard({ suggestion }) {
                         whiteSpace: 'pre-wrap',
                         overflowWrap: 'anywhere',
                         fontFamily: 'SFMono-Regular, Consolas, Menlo, monospace',
+                        fontSize: 12,
                         color: line.startsWith('+')
                           ? token.colorSuccessText
                           : line.startsWith('-')
@@ -134,12 +163,12 @@ export function SuggestionDiffCard({ suggestion }) {
                       {line}
                     </pre>
                   ))}
-                </AppCard>
+                </div>
               ),
             },
           ]}
         />
       ) : null}
-    </AppCard>
+    </div>
   );
 }

@@ -5,6 +5,8 @@ import json
 import logging
 import mimetypes
 import os
+import socket
+import sys
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -40,6 +42,12 @@ class MemoryLeakApp:
         app = self
 
         class Handler(BaseHTTPRequestHandler):
+            def handle(self) -> None:
+                try:
+                    super().handle()
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, socket.timeout):
+                    return
+
             def do_GET(self) -> None:  # noqa: N802
                 try:
                     app.handle_get(self)
@@ -418,7 +426,17 @@ def run_server(host: str = "127.0.0.1", port: int = 8090) -> None:
     logger.info("Log collection enabled for all MCP-Vul modules")
 
     app = MemoryLeakApp()
-    server = ThreadingHTTPServer((host, port), app.make_handler())
+
+    class QuietThreadingHTTPServer(ThreadingHTTPServer):
+        daemon_threads = True
+
+        def handle_error(self, request: object, client_address: tuple[str, int] | str) -> None:
+            exc = sys.exc_info()[1]
+            if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, socket.timeout)):
+                return
+            super().handle_error(request, client_address)
+
+    server = QuietThreadingHTTPServer((host, port), app.make_handler())
     print(f"Memory Leak Investigator UI: http://{host}:{port}")
     print(f"Logs available at: http://{host}:{port}/logs")
     try:

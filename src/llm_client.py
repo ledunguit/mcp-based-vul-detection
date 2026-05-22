@@ -2,6 +2,7 @@
 
 from typing import Any
 import json
+import os
 
 from src.config import (
     LLM_PROVIDER,
@@ -19,8 +20,9 @@ class LLMClient:
     """Unified LLM client supporting Claude and local OpenAI-compatible endpoints."""
     
     def __init__(self, provider: str | None = None):
-        self.provider = provider or LLM_PROVIDER
+        self.provider = self._normalize_provider(provider or LLM_PROVIDER)
         self._client = None
+        self.model = ""
         self._init_client()
     
     def _init_client(self):
@@ -28,14 +30,61 @@ class LLMClient:
         if self.provider == "claude":
             import anthropic
             self._client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            self.model = CLAUDE_MODEL
         elif self.provider == "local":
             from openai import OpenAI
             self._client = OpenAI(
                 base_url=LOCAL_LLM_BASE_URL,
                 api_key=LOCAL_LLM_API_KEY,
             )
+            self.model = self._resolve_local_model()
         else:
             raise ValueError(f"Unknown LLM provider: {self.provider}")
+
+    def _normalize_provider(self, provider: str | None) -> str:
+        value = (provider or "auto").strip().lower()
+        if value in {"local", "openai", "openai_compatible", "openai-compatible"}:
+            return "local"
+        if value == "auto":
+            has_anthropic_key = bool(ANTHROPIC_API_KEY.strip())
+            local_base_url = (LOCAL_LLM_BASE_URL or "").strip()
+            if local_base_url and local_base_url != "http://127.0.0.1:1234/v1" and not has_anthropic_key:
+                return "local"
+            if has_anthropic_key:
+                return "claude"
+            return "local"
+        return value
+
+    def _resolve_local_model(self) -> str:
+        configured = (LOCAL_LLM_MODEL or "").strip()
+        if configured and configured != "local-model":
+            return configured
+
+        preferred = os.getenv("LOCAL_LLM_MODEL_PREFERRED", "").strip()
+        models = self._list_local_models()
+        if preferred and preferred in models:
+            return preferred
+        if configured and configured in models:
+            return configured
+        if models:
+            return models[0]
+        if configured:
+            return configured
+        raise ValueError(
+            "No local LLM model configured and the OpenAI-compatible endpoint did not return any models."
+        )
+
+    def _list_local_models(self) -> list[str]:
+        try:
+            response = self._client.models.list()
+        except Exception:
+            return []
+        result: list[str] = []
+        for item in getattr(response, "data", []) or []:
+            model_id = getattr(item, "id", None)
+            if model_id:
+                result.append(str(model_id))
+        return result
     
     def chat(
         self,
@@ -126,7 +175,7 @@ class LLMClient:
         all_messages.extend(messages)
         
         kwargs = {
-            "model": LOCAL_LLM_MODEL,
+            "model": self.model,
             "messages": all_messages,
             "max_tokens": max_tokens,
             "temperature": temperature,

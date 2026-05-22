@@ -5,8 +5,13 @@ import { tagColor } from '../utils/ui';
 
 const { Text, Title } = Typography;
 
-export function AppHeader({ selectedScan }) {
+export function AppHeader({ selectedScan, reportData }) {
   const { token } = theme.useToken();
+  const workspaceDisplayPath =
+    reportData?.repo_path
+    || reportData?.scan_manifest?.repo_path
+    || selectedScan?.workspace_path
+    || 'Select a workspace and start a scan to populate the console.';
 
   return (
     <Flex justify="space-between" align="center" gap={16} wrap>
@@ -35,7 +40,7 @@ export function AppHeader({ selectedScan }) {
         <Tag color={tagColor(selectedScan?.status)}>{selectedScan?.status || 'idle'}</Tag>
         {selectedScan ? <Tag>{selectedScan.scan_id}</Tag> : <Tag>no active scan</Tag>}
         <Text type="secondary" style={{ textAlign: 'right' }}>
-          {selectedScan?.workspace_path || 'Select a workspace and start a scan to populate the console.'}
+          {workspaceDisplayPath}
         </Text>
       </Flex>
     </Flex>

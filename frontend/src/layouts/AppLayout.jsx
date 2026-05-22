@@ -1,17 +1,15 @@
 import { useMemo, useState } from 'react';
-import { MenuFoldOutlined, MenuUnfoldOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
+import { MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons';
 import { Link, Outlet, useLocation, useOutletContext } from 'react-router-dom';
 import { Radar } from 'lucide-react';
-import { Breadcrumb, Button, Card, Flex, Grid, Layout, Tag, Typography, theme } from 'antd';
+import { Breadcrumb, Button, Card, Flex, Grid, Layout, theme } from 'antd';
 
 import { AppHeader } from '../components/AppHeader';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { WORKFLOW_TABS, WorkflowTabs } from '../components/WorkflowTabs';
 import { useMemoryLeakConsole } from '../hooks/useMemoryLeakConsole';
-import { tagColor } from '../utils/ui';
 
 const { Header, Sider, Content } = Layout;
-const { Text } = Typography;
 const ROUTE_LABELS = Object.fromEntries(WORKFLOW_TABS.map((tab) => [tab.to, tab.label]));
 
 function titleizeSegment(segment) {
@@ -41,6 +39,10 @@ export function AppLayout() {
 
     segments.forEach((segment, index) => {
       currentPath = `${currentPath}/${segment}`;
+      const previousSegment = segments[index - 1];
+      if ((previousSegment === 'activity' || previousSegment === 'report') && segment) {
+        return;
+      }
       const label = ROUTE_LABELS[currentPath] || titleizeSegment(segment);
       items.push({
         title: index === segments.length - 1 ? label : <Link to={currentPath}>{label}</Link>,
@@ -50,8 +52,19 @@ export function AppLayout() {
     return items;
   }, [location.pathname]);
 
+  const isFullViewportPage = location.pathname.includes('/report') || location.pathname.includes('/activity');
+
   return (
-    <Layout hasSider={showSider} style={{ minHeight: '100vh', background: token.colorBgLayout }}>
+    <Layout
+      hasSider={showSider}
+      style={{
+        height: isFullViewportPage ? '100vh' : undefined,
+        minHeight: isFullViewportPage ? undefined : '100vh',
+        maxHeight: isFullViewportPage ? '100vh' : undefined,
+        overflow: isFullViewportPage ? 'hidden' : undefined,
+        background: token.colorBgLayout,
+      }}
+    >
       {showSider ? (
         <Sider
           width={280}
@@ -81,41 +94,21 @@ export function AppLayout() {
               </Flex>
             </Flex>
 
-            <WorkflowTabs collapsed={sidebarCollapsed} />
-
-            {!sidebarCollapsed ? (
-              <>
-                <Card
-                  size="small"
-                  title="Selection"
-                  styles={{ body: { display: 'flex', flexDirection: 'column', gap: 8 } }}
-                >
-                  <Flex justify="space-between" align="center" gap={8}>
-                    <Text strong ellipsis>
-                      {consoleState.selectedScan?.scan_id || 'No scan selected'}
-                    </Text>
-                    <Tag color={tagColor(consoleState.selectedScan?.status)}>
-                      {consoleState.selectedScan?.status || 'idle'}
-                    </Tag>
-                  </Flex>
-                  <Text type="secondary">
-                    {consoleState.selectedScan?.workspace_path || 'Pick a workspace and launch a scan to populate the console.'}
-                  </Text>
-                </Card>
-
-                <Card size="small">
-                  <Flex align="center" gap={8}>
-                    <SafetyCertificateOutlined style={{ color: token.colorPrimary }} />
-                    <Text type="secondary">Workspace-scoped analysis only</Text>
-                  </Flex>
-                </Card>
-              </>
-            ) : null}
+            <WorkflowTabs collapsed={sidebarCollapsed} activeScanId={consoleState.selectedScan?.scan_id} />
           </Flex>
         </Sider>
       ) : null}
 
-      <Layout style={{ background: token.colorBgLayout }}>
+      <Layout
+        style={{
+          background: token.colorBgLayout,
+          height: isFullViewportPage ? '100%' : undefined,
+          maxHeight: isFullViewportPage ? '100%' : undefined,
+          overflow: isFullViewportPage ? 'hidden' : undefined,
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
         <Header
           style={{
             background: token.colorBgContainer,
@@ -135,13 +128,13 @@ export function AppLayout() {
                 />
               ) : null}
               <div style={{ flex: 1, minWidth: 0 }}>
-                <AppHeader selectedScan={consoleState.selectedScan} />
+                <AppHeader selectedScan={consoleState.selectedScan} reportData={consoleState.reportData} />
               </div>
             </Flex>
             <Breadcrumb items={breadcrumbItems} />
             {!showSider ? (
-              <Card size="small" bodyStyle={{ paddingBlock: 8, paddingInline: 12 }}>
-                <WorkflowTabs compact />
+              <Card size="small" styles={{ body: { paddingBlock: 8, paddingInline: 12 } }}>
+                <WorkflowTabs compact activeScanId={consoleState.selectedScan?.scan_id} />
               </Card>
             ) : null}
             <ErrorBanner errorBanner={consoleState.errorBanner} />
@@ -152,7 +145,7 @@ export function AppLayout() {
           style={{
             flex: 1,
             minHeight: 0,
-            overflow: 'auto',
+            overflow: (location.pathname.includes('/report') || location.pathname.includes('/activity')) ? 'hidden' : 'auto',
             padding: '16px',
             background: token.colorBgLayout,
             display: 'flex',

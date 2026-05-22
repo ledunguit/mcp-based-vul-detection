@@ -34,6 +34,7 @@ from mcp_memory_common.leak_schema import (  # noqa: E402
     MissingCleanupPath,
     OwnershipSummary,
     OwnershipTransfer,
+    ReportFinding,
     ToolKind,
     VerdictResult,
 )
@@ -55,6 +56,7 @@ __all__ = [
     "MissingCleanupPath",
     "OwnershipSummary",
     "OwnershipTransfer",
+    "ReportFinding",
     "ToolKind",
     "VerdictResult",
 ]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from .shared_schema import (
     LeakSeverity,
     MissingCleanupPath,
     OwnershipSummary,
+    ReportFinding,
     ToolKind,
 )
 
@@ -83,11 +85,14 @@ class CandidateManager:
         bundles = self.list_bundles()
         evidence_count = sum(len(bundle.candidate.evidence) for bundle in bundles)
         serialized_bundles = [self._bundle_to_report_item(bundle) for bundle in bundles]
+        serialized_findings = [self._bundle_to_finding_item(bundle) for bundle in bundles]
         return {
             "repo_path": self.repo_path,
             "bundle_count": len(bundles),
+            "finding_count": len(serialized_findings),
             "candidate_count": len(bundles),
             "evidence_count": evidence_count,
+            "findings": serialized_findings,
             "bundles": serialized_bundles,
         }
 
@@ -107,6 +112,37 @@ class CandidateManager:
         item["task_state"] = self._task_state(bundle)
         item["verdict_quality"] = self._verdict_quality(bundle)
         return item
+
+    def _bundle_to_finding_item(self, bundle: LeakBundle) -> dict[str, Any]:
+        candidate = bundle.candidate
+        finding = ReportFinding(
+            finding_id=self._finding_id(bundle),
+            bundle_id=bundle.bundle_id,
+            candidate_id=candidate.candidate_id,
+            repo_path=bundle.repo_path or self.repo_path,
+            candidate=candidate,
+            verdict=bundle.verdict,
+            related_candidates=list(bundle.related_candidates),
+            orchestrator_notes=list(bundle.orchestrator_notes),
+            provenance_history=[
+                {
+                    "evidence_id": index,
+                    "tool": evidence.tool,
+                    "tool_kind": evidence.tool_kind.value,
+                    "kind": evidence.kind,
+                    "confidence": evidence.confidence.value,
+                    "severity": evidence.severity.value,
+                }
+                for index, evidence in enumerate(candidate.evidence)
+            ],
+            task_state=self._task_state(bundle),
+            verdict_quality=self._verdict_quality(bundle),
+        )
+        return finding.model_dump(mode="json")
+
+    def _finding_id(self, bundle: LeakBundle) -> str:
+        candidate = bundle.candidate
+        return candidate.signature or candidate.candidate_id or bundle.bundle_id
 
     def _verdict_quality(self, bundle: LeakBundle) -> dict[str, Any]:
         verdict = bundle.verdict
@@ -227,6 +263,7 @@ class CandidateManager:
         ownership_summary_result: dict[str, Any] | None = None,
         path_constraints_result: dict[str, Any] | None = None,
     ) -> LeakBundle:
+        candidate_id = self._static_candidate_id(raw_candidate)
         allocation_site = LeakLocation.model_validate(raw_candidate.get("allocation_site", {}))
         function_context = self._match_function_context(
             raw_candidate.get("line"),
@@ -265,9 +302,9 @@ class CandidateManager:
         evidence = [lexical_evidence, *shared_evidence]
 
         candidate = LeakCandidate(
-            candidate_id=raw_candidate["candidate_id"],
-            signature=raw_candidate["signature"],
-            summary=raw_candidate["summary"],
+            candidate_id=candidate_id,
+            signature=self._normalized_signature(raw_candidate),
+            summary=self._candidate_summary(raw_candidate, function_name),
             primary_tool=raw_candidate.get("tool", "memory.candidate_scan"),
             confidence=LeakConfidence.MEDIUM,
             severity=LeakSeverity.MEDIUM,
@@ -297,11 +334,39 @@ class CandidateManager:
             evidence=evidence,
         )
         return LeakBundle(
-            bundle_id=raw_candidate["candidate_id"],
+            bundle_id=candidate_id,
             repo_path=self.repo_path,
             candidate=candidate,
             orchestrator_notes=["Discovered during static repository sweep"],
         )
+
+    def _candidate_summary(self, raw_candidate: dict[str, Any], function_name: str | None) -> str:
+        line = raw_candidate.get("line")
+        file_path = str(raw_candidate.get("file") or raw_candidate.get("file_path") or "unknown")
+        relative = self._relative_file_key(file_path)
+        code = str(raw_candidate.get("allocation_site", {}).get("code_snippet") or "").strip()
+        function_label = function_name or raw_candidate.get("function") or "unknown function"
+        if code:
+            return f"Potential leak candidate in {function_label} at {relative}:{line} from `{code}`"
+        return f"Potential leak candidate in {function_label} at {relative}:{line}"
+
+    def _static_candidate_id(self, raw_candidate: dict[str, Any]) -> str:
+        file_path = str(raw_candidate.get("file") or raw_candidate.get("file_path") or "unknown")
+        line = int(raw_candidate.get("line") or 0)
+        kind = str(raw_candidate.get("allocation_site", {}).get("kind") or raw_candidate.get("kind") or "allocation")
+        snippet = str(raw_candidate.get("allocation_site", {}).get("code_snippet") or "")
+        relative = self._relative_file_key(file_path)
+        digest = hashlib.sha1(f"{relative}:{line}:{kind}:{snippet}".encode("utf-8")).hexdigest()[:10]
+        return f"static:{relative}:{line}:{kind}:{digest}"
+
+    def _normalized_signature(self, raw_candidate: dict[str, Any]) -> str:
+        file_path = str(raw_candidate.get("file") or raw_candidate.get("file_path") or "unknown")
+        line = int(raw_candidate.get("line") or 0)
+        kind = str(raw_candidate.get("allocation_site", {}).get("kind") or raw_candidate.get("kind") or "allocation")
+        snippet = str(raw_candidate.get("allocation_site", {}).get("code_snippet") or "")
+        relative = self._relative_file_key(file_path)
+        snippet_hash = hashlib.sha1(snippet.encode("utf-8")).hexdigest()[:12]
+        return f"{relative}:{line}:{kind}:{snippet_hash}"
 
     def _build_ast_evidence(
         self,
@@ -616,20 +681,22 @@ class CandidateManager:
         if not self._same_file_identity(left_file, right_file):
             return False
 
-        if self._same_signature_stem(left.candidate.signature, right.candidate.signature):
+        if left.candidate.signature and left.candidate.signature == right.candidate.signature:
             return True
 
         left_line = self._bundle_identity_line(left)
         right_line = self._bundle_identity_line(right)
         if left_line is not None and right_line is not None:
+            if left_line == right_line:
+                return True
             line_delta = abs(left_line - right_line)
-            if line_delta <= 3:
+            if line_delta <= 1 and self._same_function_identity(left, right) and self._same_allocation_snippet(left, right):
                 return True
-            if line_delta <= 15 and self._same_function_identity(left, right):
-                return True
-            return self._allocation_context_overlap(left, right)
+            return False
 
-        return self._same_function_identity(left, right) or self._allocation_context_overlap(left, right)
+        if self._same_function_identity(left, right) and self._same_allocation_snippet(left, right):
+            return True
+        return False
 
     def _bundle_file(self, bundle: LeakBundle) -> str | None:
         allocation_site = bundle.candidate.allocation_site
@@ -664,46 +731,15 @@ class CandidateManager:
 
         return left_path.name == right_path.name
 
-    def _same_signature_stem(self, left_signature: str | None, right_signature: str | None) -> bool:
-        if not left_signature or not right_signature:
-            return False
-        left_stem = self._signature_stem(left_signature)
-        right_stem = self._signature_stem(right_signature)
-        return bool(left_stem and right_stem and left_stem == right_stem)
-
-    def _signature_stem(self, signature: str) -> str:
-        parts = signature.split(":")
-        if len(parts) < 3:
-            return signature
-        return ":".join([parts[0], parts[-1]])
-
     def _same_function_identity(self, left: LeakBundle, right: LeakBundle) -> bool:
         left_function = (left.candidate.function or "").strip()
         right_function = (right.candidate.function or "").strip()
         return bool(left_function and right_function and left_function == right_function)
 
-    def _allocation_context_overlap(self, left: LeakBundle, right: LeakBundle) -> bool:
-        left_context = self._allocation_context_tokens(left)
-        right_context = self._allocation_context_tokens(right)
-        return bool(left_context and right_context and left_context.intersection(right_context))
-
-    def _allocation_context_tokens(self, bundle: LeakBundle) -> set[str]:
-        tokens: set[str] = set()
-        allocation_site = bundle.candidate.allocation_site
-        if allocation_site and allocation_site.code_snippet:
-            tokens.update(self._extract_identifier_tokens(allocation_site.code_snippet))
-        if bundle.candidate.summary:
-            tokens.update(self._extract_identifier_tokens(bundle.candidate.summary))
-        if bundle.candidate.function:
-            tokens.add(bundle.candidate.function)
-        return tokens
-
-    def _extract_identifier_tokens(self, text: str) -> set[str]:
-        return {
-            token
-            for token in "".join(char if char.isalnum() or char == "_" else " " for char in text).split()
-            if len(token) >= 3
-        }
+    def _same_allocation_snippet(self, left: LeakBundle, right: LeakBundle) -> bool:
+        left_snippet = (left.candidate.allocation_site.code_snippet if left.candidate.allocation_site else "") or ""
+        right_snippet = (right.candidate.allocation_site.code_snippet if right.candidate.allocation_site else "") or ""
+        return bool(left_snippet and right_snippet and left_snippet.strip() == right_snippet.strip())
 
     def _relative_to_repo(self, path: Path) -> Path | None:
         repo_path = Path(self.repo_path)
@@ -711,6 +747,12 @@ class CandidateManager:
             return path.resolve().relative_to(repo_path.resolve())
         except (OSError, ValueError):
             return None
+
+    def _relative_file_key(self, file_path: str) -> str:
+        relative = self._relative_to_repo(Path(file_path))
+        if relative is not None:
+            return relative.as_posix()
+        return Path(file_path).as_posix().lstrip("/")
 
     def _confidence_rank(self, confidence: LeakConfidence) -> int:
         order = {

@@ -1,16 +1,20 @@
-import { ChevronDown, ChevronUp, GripHorizontal } from 'lucide-react';
-import { Button, Empty, Space, Typography, theme } from 'antd';
+import { ChevronDown, ChevronUp, GripHorizontal } from "lucide-react";
+import { Button, Empty, Space, Typography, theme } from "antd";
 
 const { Text } = Typography;
 
 function lineColor(eventType, token) {
-  if (eventType === 'completed') {
+  if (eventType === "completed") {
     return token.colorSuccessText;
   }
-  if (['failed', 'error'].includes(eventType)) {
+  if (["failed", "error"].includes(eventType)) {
     return token.colorErrorText;
   }
-  if (['cancelled', 'cancel_requested', 'worker_termination_requested'].includes(eventType)) {
+  if (
+    ["cancelled", "cancel_requested", "worker_termination_requested"].includes(
+      eventType,
+    )
+  ) {
     return token.colorWarningText;
   }
   return token.colorText;
@@ -31,20 +35,20 @@ export function TerminalLogCard({
   const { token } = theme.useToken();
 
   return (
-    <div style={{ position: 'relative', height: '100%' }}>
+    <div style={{ position: "relative", height: "100%" }}>
       <div
         style={{
-          position: 'absolute',
-          left: '50%',
+          position: "absolute",
+          left: "50%",
           top: 0,
-          transform: 'translate(-50%, -50%)',
+          transform: "translate(-50%, -50%)",
           zIndex: 2,
           width: 120,
           height: 24,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          cursor: 'ns-resize',
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "ns-resize",
         }}
         onPointerDown={onResizeStart}
       >
@@ -54,7 +58,9 @@ export function TerminalLogCard({
           onPointerDown={(event) => event.stopPropagation()}
           onClick={onToggleCollapse}
           icon={
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <span
+              style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+            >
               <GripHorizontal size={12} />
               {collapsed ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
             </span>
@@ -67,32 +73,34 @@ export function TerminalLogCard({
             boxShadow: token.boxShadowTertiary,
           }}
         >
-          {collapsed ? 'Open Logs' : 'Hide Logs'}
+          {collapsed ? "Open Logs" : "Hide Logs"}
         </Button>
       </div>
 
       <div
         style={{
-          height: '100%',
-          display: 'flex',
-          flexDirection: 'column',
+          height: "100%",
+          display: "flex",
+          flexDirection: "column",
           border: `1px solid ${token.colorBorderSecondary}`,
           borderRadius: token.borderRadiusLG,
           background: token.colorBgContainer,
           boxShadow: token.boxShadowTertiary,
-          overflow: 'hidden',
+          overflow: "hidden",
         }}
       >
         <div
           style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
             gap: 12,
             minHeight: collapsed ? 46 : 42,
             paddingInline: 14,
             background: token.colorBgContainer,
-            borderBottom: collapsed ? 'none' : `1px solid ${token.colorBorderSecondary}`,
+            borderBottom: collapsed
+              ? "none"
+              : `1px solid ${token.colorBorderSecondary}`,
           }}
         >
           <Space size={10} style={{ minWidth: 0 }}>
@@ -100,16 +108,16 @@ export function TerminalLogCard({
               Terminal Log
             </Text>
             <Text
-              type="secondary"
-              code={!collapsed}
+              type="primary"
               ellipsis
               style={{
                 minWidth: 0,
                 maxWidth: collapsed ? 220 : 320,
                 fontSize: 12,
+                color: token.colorPrimary,
               }}
             >
-              {selectedScan ? `scan-progress.log :: ${selectedScan.scan_id}` : 'scan-progress.log'}
+              {selectedScan ? `${selectedScan.scan_id}` : ""}
             </Text>
           </Space>
 
@@ -118,7 +126,12 @@ export function TerminalLogCard({
               <Button size="small" onClick={onReload} disabled={!selectedScan}>
                 Reload
               </Button>
-              <Button size="small" onClick={onExport} disabled={!selectedScan}>
+              <Button
+                type="primary"
+                size="small"
+                onClick={onExport}
+                disabled={!selectedScan}
+              >
                 Export
               </Button>
             </Space>
@@ -128,39 +141,31 @@ export function TerminalLogCard({
         {!collapsed ? (
           <div
             style={{
-              display: 'flex',
-              flexDirection: 'column',
+              display: "flex",
+              flexDirection: "column",
               flex: 1,
               minHeight: 0,
               background: token.colorBgContainer,
-              overflow: 'hidden',
+              overflow: "hidden",
             }}
           >
-            <div
-              style={{
-                borderBottom: `1px solid ${token.colorBorderSecondary}`,
-                padding: '8px 14px',
-                background: token.colorBgContainer,
-              }}
-            >
-              <Text code>{selectedScan ? `scan-progress.log :: ${selectedScan.scan_id}` : 'scan-progress.log'}</Text>
-            </div>
-
             <div
               ref={terminalRef}
               style={{
                 flex: 1,
                 minHeight: 0,
-                overflow: 'auto',
+                overflow: "auto",
                 padding: 14,
                 background: token.colorBgContainer,
-                fontFamily: 'SFMono-Regular, Consolas, Menlo, monospace',
+                fontFamily: "SFMono-Regular, Consolas, Menlo, monospace",
                 fontSize: 13,
                 lineHeight: 1.65,
               }}
             >
               {loadingScan ? (
-                <pre style={{ margin: 0, color: token.colorInfoText }}>{'> loading selected scan...'}</pre>
+                <pre style={{ margin: 0, color: token.colorInfoText }}>
+                  {"> loading selected scan..."}
+                </pre>
               ) : null}
 
               {deferredEvents.length ? (
@@ -172,11 +177,11 @@ export function TerminalLogCard({
                         style={{
                           margin: 0,
                           color: lineColor(event.type, token),
-                          whiteSpace: 'pre-wrap',
-                          overflowWrap: 'anywhere',
+                          whiteSpace: "pre-wrap",
+                          overflowWrap: "anywhere",
                         }}
                       >
-                        {`${index === 0 ? '>' : '.'} ${line}`}
+                        {`${index === 0 ? ">" : "."} ${line}`}
                       </pre>
                     ))}
                   </div>
@@ -184,7 +189,11 @@ export function TerminalLogCard({
               ) : (
                 <Empty
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  description={selectedScan ? 'Waiting for scan events...' : 'No scan selected.'}
+                  description={
+                    selectedScan
+                      ? "Waiting for scan events..."
+                      : "No scan selected."
+                  }
                 />
               )}
             </div>

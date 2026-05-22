@@ -1,21 +1,27 @@
+import { useNavigate, useParams } from 'react-router-dom';
+
 import { useConsoleContext } from '../layouts/AppLayout';
 
 export function useReportPageActions() {
+  const navigate = useNavigate();
+  const { scanId } = useParams();
   const consoleState = useConsoleContext();
+  const activeScanId = scanId || consoleState.selectedScan?.scan_id;
 
   return {
     consoleState,
     handleReloadStructured: () =>
-      consoleState.selectedScan
-        ? consoleState.loadStructuredReport(consoleState.selectedScan.scan_id).catch(() => undefined)
+      activeScanId
+        ? consoleState.loadStructuredReport(activeScanId).catch(() => undefined)
         : undefined,
     handleLoadReport: (format) =>
-      consoleState.selectedScan
-        ? consoleState.loadReport(consoleState.selectedScan.scan_id, format).catch(() => undefined)
+      activeScanId
+        ? consoleState.loadReport(activeScanId, format).catch(() => undefined)
         : undefined,
     handleOpenHtml: () =>
-      consoleState.selectedScan
-        ? window.open(`/api/scans/${consoleState.selectedScan.scan_id}/report?format=html`, '_blank', 'noopener,noreferrer')
+      activeScanId
+        ? window.open(`/api/scans/${activeScanId}/report?format=html`, '_blank', 'noopener,noreferrer')
         : undefined,
+    handleOpenActivity: () => navigate(activeScanId ? `/activity/${activeScanId}` : '/activity'),
   };
 }

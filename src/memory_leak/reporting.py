@@ -8,10 +8,10 @@ from typing import Any
 
 
 def render_markdown_report(report: dict[str, Any]) -> str:
-    bundles = report.get("bundles", [])
+    findings = _report_findings(report)
     verdict_counts = Counter(
-        (bundle.get("verdict") or {}).get("verdict", "unjudged")
-        for bundle in bundles
+        (finding.get("verdict") or {}).get("verdict", "unjudged")
+        for finding in findings
     )
 
     lines = [
@@ -26,7 +26,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         f"- Static expansion mode: `{report.get('static_expansion_mode', 'balanced')}`",
         f"- File analysis concurrency: {report.get('file_analysis_concurrency', 1)}",
         f"- Static tool concurrency: {report.get('static_tool_concurrency', 1)}",
-        f"- Bundles: {report.get('bundle_count', len(bundles))}",
+        f"- Findings: {report.get('finding_count', len(findings))}",
         f"- Evidence items: {report.get('evidence_count', 0)}",
         f"- Tool invocations: {len(report.get('tool_invocations', []))}",
         "",
@@ -89,6 +89,8 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         )
         if judge_summary.get("provider"):
             lines.append(f"- LLM provider: `{judge_summary['provider']}`")
+        if judge_summary.get("model"):
+            lines.append(f"- LLM model: `{judge_summary['model']}`")
         if judge_summary.get("judge_scope"):
             lines.append(f"- Judge scope: `{judge_summary['judge_scope']}`")
         if judge_summary.get("judge_batch_size"):
@@ -111,28 +113,29 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         lines.append("- No candidates found.")
 
     lines.extend(["", "## Findings", ""])
-    if not bundles:
+    if not findings:
         lines.append("No memory leak candidates were found.")
         lines.extend(_render_investigation_trace(report))
         return "\n".join(lines).rstrip() + "\n"
 
-    for index, bundle in enumerate(bundles, start=1):
-        candidate = bundle.get("candidate", {})
-        verdict = bundle.get("verdict") or {}
+    for index, finding in enumerate(findings, start=1):
+        candidate = finding.get("candidate", {})
+        verdict = finding.get("verdict") or {}
         evidence = candidate.get("evidence", [])
         lines.extend(
             [
                 f"### {index}. {_text(candidate.get('summary'), 'Memory leak candidate')}",
                 "",
-                f"- Bundle ID: `{bundle.get('bundle_id', 'unknown')}`",
-                f"- Candidate ID: `{candidate.get('candidate_id', 'unknown')}`",
+                f"- Finding ID: `{finding.get('finding_id', 'unknown')}`",
+                f"- Bundle ID: `{finding.get('bundle_id', 'unknown')}`",
+                f"- Candidate ID: `{finding.get('candidate_id', candidate.get('candidate_id', 'unknown'))}`",
                 f"- Verdict: `{verdict.get('verdict', 'unjudged')}`",
                 f"- Confidence: `{verdict.get('confidence', candidate.get('confidence', 'unknown'))}`",
                 f"- Primary tool: `{candidate.get('primary_tool', 'unknown')}`",
                 f"- Location: {_format_location(candidate)}",
                 f"- Allocation site: {_format_location(candidate.get('allocation_site'))}",
                 f"- Missing free site: {_format_location(candidate.get('missing_free_site'))}",
-                f"- Verdict quality: {_format_verdict_quality(bundle.get('verdict_quality'))}",
+                f"- Verdict quality: {_format_verdict_quality(finding.get('verdict_quality'))}",
                 "",
                 "#### Why This Is Considered A Leak",
                 "",
@@ -183,7 +186,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         else:
             lines.append("- No fix suggestion was produced.")
 
-        notes = bundle.get("orchestrator_notes") or []
+        notes = finding.get("orchestrator_notes") or []
         if notes:
             lines.extend(["", "#### Orchestrator Notes", ""])
             lines.extend(f"- {note}" for note in notes)
@@ -240,15 +243,15 @@ def render_html_report(report: dict[str, Any]) -> str:
 
 
 def build_result_snapshot(report: dict[str, Any], mode: str = "orchestrated") -> dict[str, Any]:
-    bundles = report.get("bundles", [])
+    findings = _report_findings(report)
     verdict_counts = Counter(
-        (bundle.get("verdict") or {}).get("verdict", "unjudged")
-        for bundle in bundles
+        (finding.get("verdict") or {}).get("verdict", "unjudged")
+        for finding in findings
     )
     tool_counts = Counter(
         evidence.get("tool", "unknown")
-        for bundle in bundles
-        for evidence in (bundle.get("candidate", {}).get("evidence", []) or [])
+        for finding in findings
+        for evidence in (finding.get("candidate", {}).get("evidence", []) or [])
     )
     return {
         "schema_version": "memory-leak-snapshot/v1",
@@ -261,8 +264,9 @@ def build_result_snapshot(report: dict[str, Any], mode: str = "orchestrated") ->
         "static_tool_concurrency": report.get("static_tool_concurrency"),
         "judge_summary": report.get("judge_summary"),
         "performance_summary": report.get("performance_summary"),
-        "bundle_count": report.get("bundle_count", len(bundles)),
-        "candidate_count": report.get("candidate_count", len(bundles)),
+        "bundle_count": report.get("bundle_count", len(findings)),
+        "finding_count": report.get("finding_count", len(findings)),
+        "candidate_count": report.get("candidate_count", len(findings)),
         "evidence_count": report.get("evidence_count", 0),
         "verdict_counts": dict(sorted(verdict_counts.items())),
         "tool_counts": dict(sorted(tool_counts.items())),
@@ -281,15 +285,16 @@ def build_result_snapshot(report: dict[str, Any], mode: str = "orchestrated") ->
         ),
         "bundle_summaries": [
             {
-                "bundle_id": bundle.get("bundle_id"),
-                "candidate_id": (bundle.get("candidate") or {}).get("candidate_id"),
-                "primary_tool": (bundle.get("candidate") or {}).get("primary_tool"),
-                "verdict": (bundle.get("verdict") or {}).get("verdict"),
-                "confidence": (bundle.get("verdict") or {}).get("confidence"),
-                "location": _format_location(bundle.get("candidate")),
-                "verdict_quality": bundle.get("verdict_quality"),
+                "finding_id": finding.get("finding_id"),
+                "bundle_id": finding.get("bundle_id"),
+                "candidate_id": finding.get("candidate_id") or (finding.get("candidate") or {}).get("candidate_id"),
+                "primary_tool": (finding.get("candidate") or {}).get("primary_tool"),
+                "verdict": (finding.get("verdict") or {}).get("verdict"),
+                "confidence": (finding.get("verdict") or {}).get("confidence"),
+                "location": _format_location(finding.get("candidate")),
+                "verdict_quality": finding.get("verdict_quality"),
             }
-            for bundle in bundles
+            for finding in findings
         ],
     }
 
@@ -298,8 +303,8 @@ def compare_result_snapshots(
     baseline: dict[str, Any],
     current: dict[str, Any],
 ) -> dict[str, Any]:
-    baseline_ids = {item.get("bundle_id") for item in baseline.get("bundle_summaries", [])}
-    current_ids = {item.get("bundle_id") for item in current.get("bundle_summaries", [])}
+    baseline_ids = {item.get("finding_id") or item.get("bundle_id") for item in baseline.get("bundle_summaries", [])}
+    current_ids = {item.get("finding_id") or item.get("bundle_id") for item in current.get("bundle_summaries", [])}
     return {
         "schema_version": "memory-leak-comparison/v1",
         "baseline_mode": baseline.get("mode"),
@@ -357,7 +362,6 @@ def _render_investigation_trace(report: dict[str, Any]) -> list[str]:
         )
     else:
         lines.append("- No task trace recorded.")
-
     lines.extend(["", "## Tool Invocations", ""])
     if invocations:
         for invocation in invocations:
@@ -369,6 +373,13 @@ def _render_investigation_trace(report: dict[str, Any]) -> list[str]:
     else:
         lines.append("- No tool invocations recorded.")
     return lines
+
+
+def _report_findings(report: dict[str, Any]) -> list[dict[str, Any]]:
+    findings = report.get("findings")
+    if findings:
+        return findings
+    return report.get("bundles", [])
 
 
 def _inline_code_to_html(value: str) -> str:

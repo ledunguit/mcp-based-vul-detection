@@ -598,12 +598,15 @@ class MemoryLeakJudge:
         requested_mode = "llm" if self.use_llm else "heuristic"
         effective_mode = "llm" if self._llm_success_count > 0 else "heuristic"
         provider = None
+        model = None
         if self.use_llm:
-            provider = self.provider or os.getenv("LLM_PROVIDER", "claude")
+            provider = self.provider or getattr(self.client, "provider", None) or os.getenv("LLM_PROVIDER", "auto")
+            model = getattr(self.client, "model", None)
         return {
             "requested_mode": requested_mode,
             "effective_mode": effective_mode,
             "provider": provider,
+            "model": model,
             "llm_used": self._llm_success_count > 0,
             "llm_success_count": self._llm_success_count,
             "heuristic_fallback_count": self._heuristic_fallback_count,

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Empty, Space, Tabs, Typography } from 'antd';
+import { Button, Empty, Flex, Segmented, Space, Tabs, Typography } from 'antd';
 
 import { FindingsView } from './report/FindingsView';
 import { OverviewView } from './report/OverviewView';
@@ -12,64 +12,78 @@ export function ReportControlsCard({ selectedScan, reportData, reportText, onRel
 
   return (
     <AppCard
-      title="Report"
-      extra={
+      style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
+      styles={{
+        header: { display: 'none' },
+        body: {
+          flex: 1,
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+        }
+      }}
+    >
+      <Flex
+        align="center"
+        justify="space-between"
+        gap={12}
+        wrap
+        style={{
+          flexShrink: 0,
+          paddingBottom: 12,
+          borderBottom: '1px solid rgba(64, 71, 84, 0.08)',
+          marginBottom: 8,
+        }}
+      >
         <Space wrap>
-          <Button onClick={onReloadStructured} disabled={!selectedScan}>
-            Refresh Structured
+          <Button size="small" onClick={onReloadStructured} disabled={!selectedScan}>
+            Refresh
           </Button>
-          <Button
-            onClick={() => {
-              setActiveTab('raw');
-              onLoadReport('markdown');
-            }}
-            disabled={!selectedScan}
-          >
-            Markdown
-          </Button>
-          <Button
-            onClick={() => {
-              setActiveTab('raw');
-              onLoadReport('json');
-            }}
-            disabled={!selectedScan}
-          >
-            JSON
-          </Button>
-          <Button
-            onClick={() => {
-              setActiveTab('raw');
-              onLoadReport('snapshot');
-            }}
-            disabled={!selectedScan}
-          >
-            Snapshot
-          </Button>
-          <Button onClick={onOpenHtml} disabled={!selectedScan}>
-            HTML
+          <Button type="primary" size="small" onClick={onOpenHtml} disabled={!selectedScan}>
+            Open HTML
           </Button>
         </Space>
-      }
-    >
+
+        <Segmented
+          size="middle"
+          disabled={!selectedScan}
+          options={[
+            { label: 'Markdown', value: 'markdown' },
+            { label: 'JSON', value: 'json' },
+            { label: 'Snapshot', value: 'snapshot' },
+          ]}
+          onChange={(value) => {
+            setActiveTab('raw');
+            onLoadReport(value);
+          }}
+        />
+      </Flex>
+
       <Tabs
         activeKey={activeTab}
         onChange={setActiveTab}
+        className="report-tabs"
+        style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
         items={[
           {
             key: 'overview',
             label: 'Overview',
+            style: { flex: 1, minHeight: 0, overflowY: 'auto', paddingRight: 8 },
             children: <OverviewView selectedScan={selectedScan} reportData={reportData} />,
           },
           {
             key: 'findings',
             label: 'Findings',
+            style: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' },
             children: <FindingsView reportData={reportData} />,
           },
           {
             key: 'raw',
             label: 'Raw Output',
+            style: { flex: 1, minHeight: 0, overflowY: 'auto' },
             children: selectedScan ? (
-              <AppCard size="small" bodyGap={0}>
+              <AppCard size="small" bodyGap={0} style={{ minHeight: '100%' }}>
                 <Paragraph
                   style={{
                     marginBottom: 0,

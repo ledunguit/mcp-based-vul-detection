@@ -172,7 +172,7 @@ function phaseOutput(nodeId, selectedScan, reportData, events) {
       output: summarizePairs({
         scanned_files: taskEvent?.scanned_files,
         candidate_files: reportData?.candidate_source_file_count ?? selectedScan?.candidate_count,
-        bundles: selectedScan?.bundle_count,
+        findings: reportData?.finding_count ?? selectedScan?.finding_count ?? selectedScan?.bundle_count,
       }),
       latest,
     };
@@ -230,7 +230,7 @@ function phaseOutput(nodeId, selectedScan, reportData, events) {
   if (nodeId === 'report') {
     return {
       input: summarizePairs({
-        bundle_count: reportData?.bundle_count ?? selectedScan?.bundle_count,
+        finding_count: reportData?.finding_count ?? selectedScan?.finding_count ?? selectedScan?.bundle_count,
         evidence_count: reportData?.evidence_count ?? selectedScan?.evidence_count,
       }),
       output: summarizePairs({
@@ -250,7 +250,7 @@ function phaseOutput(nodeId, selectedScan, reportData, events) {
     output: summarizePairs({
       status: latest?.status || selectedScan?.status,
       duration_ms: latest?.duration_ms,
-      bundle_count: latest?.bundle_count,
+      finding_count: latest?.finding_count ?? latest?.bundle_count,
       evidence_count: latest?.evidence_count,
     }),
     latest,
@@ -639,18 +639,8 @@ function WorkflowCanvas({
 
   return (
     <AppCard
-      title="Execution"
       style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
-      extra={
-        <Space wrap>
-          <Button danger size="small" onClick={onCancel} disabled={!activeScan}>
-            Cancel Scan
-          </Button>
-          <Button size="small" onClick={onOpenReport} disabled={!selectedScan}>
-            Open Full Report
-          </Button>
-        </Space>
-      }
+      styles={{ header: { display: 'none' } }}
       bodyStyle={{ flex: 1, minHeight: 0, overflow: 'hidden' }}
     >
       <Flex vertical gap={16} style={{ flex: 1, minHeight: 0 }}>
@@ -677,8 +667,14 @@ function WorkflowCanvas({
           </Flex>
 
           <Space wrap size={[8, 8]} style={{ justifyContent: 'flex-end' }}>
+            <Button danger type="primary" size="small" onClick={onCancel} disabled={!activeScan}>
+              Cancel Scan
+            </Button>
+            <Button type="primary" size="small" onClick={onOpenReport} disabled={!selectedScan}>
+              Open Full Report
+            </Button>
             {[
-              ['Bundles', selectedScan?.bundle_count ?? '-'],
+              ['Findings', selectedScan?.finding_count ?? selectedScan?.bundle_count ?? '-'],
               ['Candidates', selectedScan?.candidate_count ?? '-'],
               ['Evidence', selectedScan?.evidence_count ?? '-'],
             ].map(([label, value]) => (

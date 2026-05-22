@@ -60,3 +60,71 @@ def test_dynamic_planner_rejects_non_binary_hint(tmp_path: Path) -> None:
     targets = planner._discover_targets(repo, binary_hint="Makefile")
 
     assert targets == []
+
+
+def test_dynamic_planner_prefers_built_targets_from_dynamic_build(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    build_dir = repo / "build"
+    build_dir.mkdir(parents=True)
+    built = build_dir / "demo"
+    built.write_bytes(b"\x7fELFfake-binary")
+    built.chmod(0o755)
+
+    planner = DynamicValidationPlanner(["valgrind.analyze_memcheck"])
+    targets = planner._discover_targets(
+        repo,
+        binary_hint=None,
+        dynamic_build_result={
+            "built_targets": [
+                {
+                    "path": str(built),
+                    "detected_format": "elf",
+                    "executable": True,
+                    "compatible": True,
+                    "sanitizer_instrumented": False,
+                }
+            ]
+        },
+    )
+
+    assert [(path.name, source) for _, path, source in targets] == [("demo", "dynamic_build")]
+
+
+def test_dynamic_planner_prefers_valgrind_for_unsanitized_auto_builds() -> None:
+    planner = DynamicValidationPlanner(["lsan.run", "valgrind.analyze_memcheck", "asan.run"])
+    assert (
+        planner._select_runner_tool(
+            dynamic_build_result={
+                "built_targets": [
+                    {
+                        "path": "/tmp/demo",
+                        "detected_format": "elf",
+                        "executable": True,
+                        "compatible": True,
+                        "sanitizer_instrumented": False,
+                    }
+                ]
+            }
+        )
+        == "valgrind.analyze_memcheck"
+    )
+
+
+def test_dynamic_planner_prefers_lsan_for_sanitized_auto_builds() -> None:
+    planner = DynamicValidationPlanner(["lsan.run", "valgrind.analyze_memcheck", "asan.run"])
+    assert (
+        planner._select_runner_tool(
+            dynamic_build_result={
+                "built_targets": [
+                    {
+                        "path": "/tmp/demo",
+                        "detected_format": "elf",
+                        "executable": True,
+                        "compatible": True,
+                        "sanitizer_instrumented": True,
+                    }
+                ]
+            }
+        )
+        == "lsan.run"
+    )

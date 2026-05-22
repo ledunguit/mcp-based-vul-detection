@@ -22,13 +22,22 @@ export function ScanHistoryList({
 
   return (
     <AppCard
-      title="Recent Investigations"
-      extra={
+      styles={{ header: { display: 'none' } }}
+    >
+      <Flex align="center" justify="space-between" gap={12} wrap>
+        <Text type="secondary">Open a running or completed scan, compare statuses, and clean up terminal entries.</Text>
         <Space wrap>
-          <Button type="text" size="small" icon={<RefreshCw size={14} />} onClick={onRefresh}>
+          <Tag>
+            <Flex align="center" gap={6}>
+              <History size={14} />
+              <span>Scan history</span>
+            </Flex>
+          </Tag>
+          <Button size="small" icon={<RefreshCw size={14} />} onClick={onRefresh}>
             Refresh
           </Button>
           <Button
+            type="primary"
             danger
             size="small"
             icon={<Trash2 size={14} />}
@@ -38,17 +47,7 @@ export function ScanHistoryList({
             Delete Old
           </Button>
         </Space>
-      }
-    >
-      <Space direction="vertical" size={4}>
-        <Tag>
-          <Flex align="center" gap={6}>
-            <History size={14} />
-            <span>Scan history</span>
-          </Flex>
-        </Tag>
-        <Text type="secondary">Open a running or completed scan, compare statuses, and clean up terminal entries.</Text>
-      </Space>
+      </Flex>
 
       <List
         dataSource={recentScans}

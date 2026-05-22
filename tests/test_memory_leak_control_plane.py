@@ -306,13 +306,23 @@ class FakeMCPClient:
             }
 
         if tool_name == "dynamic.build_target":
+            expected_output_path = arguments.get("expected_output_path") or str(Path(arguments["project_path"]) / "demo-bin")
             return {
                 "run_id": "build:demo",
                 "status": "completed",
                 "command": arguments["build_command"],
                 "project_path": arguments["project_path"],
-                "expected_output_path": arguments.get("expected_output_path"),
-                "expected_output_exists": bool(arguments.get("expected_output_path")),
+                "expected_output_path": expected_output_path,
+                "expected_output_exists": True,
+                "built_targets": [
+                    {
+                        "path": expected_output_path,
+                        "detected_format": "shebang_script",
+                        "executable": True,
+                        "compatible": True,
+                        "sanitizer_instrumented": False,
+                    }
+                ],
                 "exit_code": 0,
                 "timed_out": False,
                 "duration_sec": 0.1,
@@ -603,7 +613,53 @@ def test_candidate_manager_does_not_merge_same_basename_in_different_directories
     assert len(bundles) == 2
 
 
-def test_candidate_manager_merges_dynamic_bundle_by_function_and_nearby_allocation() -> None:
+def test_candidate_manager_assigns_unique_static_candidate_ids_per_allocation_site() -> None:
+    manager = CandidateManager("/tmp/repo")
+    manager.ingest_static_scan(
+        {
+            "file_path": "/tmp/repo/src/demo.c",
+            "candidates": [
+                {
+                    "candidate_id": "static-candidate-0001",
+                    "signature": "/tmp/repo/src/demo.c:2:allocation",
+                    "summary": "Potential leak candidate discovered by lexical allocation scan",
+                    "tool": "memory.candidate_scan",
+                    "file": "/tmp/repo/src/demo.c",
+                    "line": 2,
+                    "allocation_site": {
+                        "file": "/tmp/repo/src/demo.c",
+                        "line": 2,
+                        "code_snippet": "char *buf = malloc(32);",
+                    },
+                    "early_return_lines": [],
+                    "raw_evidence": {},
+                },
+                {
+                    "candidate_id": "static-candidate-0002",
+                    "signature": "/tmp/repo/src/demo.c:7:allocation",
+                    "summary": "Potential leak candidate discovered by lexical allocation scan",
+                    "tool": "memory.candidate_scan",
+                    "file": "/tmp/repo/src/demo.c",
+                    "line": 7,
+                    "allocation_site": {
+                        "file": "/tmp/repo/src/demo.c",
+                        "line": 7,
+                        "code_snippet": "char *other = malloc(64);",
+                    },
+                    "early_return_lines": [],
+                    "raw_evidence": {},
+                },
+            ],
+        }
+    )
+
+    bundles = manager.list_bundles()
+    assert len(bundles) == 2
+    assert bundles[0].candidate.candidate_id != bundles[1].candidate.candidate_id
+    assert bundles[0].bundle_id != bundles[1].bundle_id
+
+
+def test_candidate_manager_merges_dynamic_bundle_by_matching_allocation_identity() -> None:
     manager = CandidateManager("/tmp/repo")
     manager.ingest_static_scan(
         {
@@ -634,18 +690,18 @@ def test_candidate_manager_merges_dynamic_bundle_by_function_and_nearby_allocati
                 "bundle_id": "dynamic-2",
                 "candidate": {
                     "candidate_id": "dynamic-2",
-                    "signature": "/tmp/repo/src/demo.c:52:memcheck",
+                    "signature": "/tmp/repo/src/demo.c:40:memcheck",
                     "summary": "Leak confirmed dynamically for buf in demo",
                     "primary_tool": "valgrind.analyze_memcheck",
                     "confidence": "high",
                     "severity": "high",
                     "file": "/tmp/repo/src/demo.c",
-                    "line": 52,
+                    "line": 40,
                     "function": "demo",
                     "allocation_site": {
                         "file": "/tmp/repo/src/demo.c",
-                        "line": 44,
-                        "code_snippet": "buf = malloc(64);",
+                        "line": 40,
+                        "code_snippet": "char *buf = malloc(64);",
                     },
                     "tags": ["dynamic"],
                     "evidence": [
@@ -684,7 +740,7 @@ def test_control_plane_scans_repo_with_fake_client(tmp_path: Path) -> None:
     assert report["bundle_count"] == 1
     assert report["dynamic_run_ids"] == ["run-123"]
     signatures = {bundle["candidate"]["signature"] for bundle in report["bundles"]}
-    assert any(signature.endswith(":2:allocation") for signature in signatures)
+    assert any(":2:allocation:" in signature for signature in signatures)
     static_bundle = report["bundles"][0]
     tools = {evidence["tool"] for evidence in static_bundle["candidate"]["evidence"]}
     assert "memory.function_summary" in tools
@@ -825,7 +881,7 @@ def test_control_plane_retries_with_second_dynamic_target_after_no_match(tmp_pat
     assert report["auto_dynamic_run_ids"] == ["run:aaa-nohit", "run:zzz-hit"]
     assert len(report["dynamic_rounds"]) == 2
     assert report["dynamic_rounds"][0]["matched_bundle_ids"] == []
-    assert report["dynamic_rounds"][1]["matched_bundle_ids"] == ["cand:demo.c"]
+    assert report["dynamic_rounds"][1]["matched_bundle_ids"] == [report["bundles"][0]["bundle_id"]]
     notes = report["bundles"][0]["orchestrator_notes"]
     assert any("Dynamic round 1 did not corroborate" in note for note in notes)
     attempt_evidence = [
@@ -842,6 +898,31 @@ class FakeLsanFirstMCPClient(FakeMCPClient):
         self._tools.add("lsan.run")
 
     def call_tool(self, tool_name: str, arguments: dict) -> dict:
+        if tool_name == "dynamic.build_target":
+            expected_output_path = arguments.get("expected_output_path") or str(Path(arguments["project_path"]) / "demo-bin")
+            self.calls.append((tool_name, dict(arguments)))
+            return {
+                "run_id": "build:demo",
+                "status": "completed",
+                "command": arguments["build_command"],
+                "project_path": arguments["project_path"],
+                "expected_output_path": expected_output_path,
+                "expected_output_exists": True,
+                "built_targets": [
+                    {
+                        "path": expected_output_path,
+                        "detected_format": "elf",
+                        "executable": True,
+                        "compatible": True,
+                        "sanitizer_instrumented": True,
+                    }
+                ],
+                "exit_code": 0,
+                "timed_out": False,
+                "duration_sec": 0.1,
+                "stdout_path": "/tmp/build.stdout",
+                "stderr_path": "/tmp/build.stderr",
+            }
         if tool_name == "lsan.run":
             self.calls.append((tool_name, dict(arguments)))
             target_path = arguments["target_path"]
@@ -857,7 +938,7 @@ class FakeLsanFirstMCPClient(FakeMCPClient):
         return super().call_tool(tool_name, arguments)
 
 
-def test_control_plane_prefers_lsan_in_auto_mode_when_available(tmp_path: Path) -> None:
+def test_control_plane_prefers_valgrind_for_unsanitized_auto_targets(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "demo.c").write_text("int demo() {\n  char *buf = malloc(32);\n  return 0;\n}\n")
@@ -876,8 +957,34 @@ def test_control_plane_prefers_lsan_in_auto_mode_when_available(tmp_path: Path) 
 
     lsan_calls = [arguments for tool, arguments in client.calls if tool == "lsan.run"]
     valgrind_calls = [arguments for tool, arguments in client.calls if tool == "valgrind.analyze_memcheck"]
+    assert lsan_calls == []
+    assert len(valgrind_calls) == 1
+    assert report["dynamic_run_reports"][0]["tool"] == "valgrind.analyze_memcheck"
+
+
+def test_control_plane_prefers_lsan_for_sanitized_build_targets_in_auto_mode(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "demo.c").write_text("int demo() {\n  char *buf = malloc(32);\n  return 0;\n}\n")
+    binary = repo / "demo-bin"
+    binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    binary.chmod(0o755)
+
+    client = FakeLsanFirstMCPClient()
+    control_plane = MemoryLeakControlPlane(mcp_client=client)
+    report = control_plane.scan_repo(
+        str(repo),
+        build_command="make asan",
+        dynamic_mode="selective",
+        dynamic_binary_path=str(binary),
+        dynamic_tool_preference="auto",
+    )
+
+    lsan_calls = [arguments for tool, arguments in client.calls if tool == "lsan.run"]
+    valgrind_calls = [arguments for tool, arguments in client.calls if tool == "valgrind.analyze_memcheck"]
     assert len(lsan_calls) == 1
     assert valgrind_calls == []
+    assert report["dynamic_execution_plan"]["runner_tool"] == "lsan.run"
     assert report["dynamic_run_reports"][0]["tool"] == "lsan.run"
 
 

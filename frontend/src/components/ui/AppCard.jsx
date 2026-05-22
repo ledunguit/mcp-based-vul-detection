@@ -10,10 +10,10 @@ function renderTitle(title, subtitle, titleLevel) {
   if (typeof title === 'string' || typeof title === 'number') {
     return (
       <Flex vertical gap={4} style={{ paddingBlock: 2 }}>
-        <Title level={titleLevel} style={{ margin: 0 }}>
+        <Title level={titleLevel} style={{ margin: 0, fontSize: titleLevel <= 4 ? 18 : 15, lineHeight: 1.35 }}>
           {title}
         </Title>
-        {subtitle ? <Text type="secondary">{subtitle}</Text> : null}
+        {subtitle ? <Text type="secondary" style={{ fontSize: 12 }}>{subtitle}</Text> : null}
       </Flex>
     );
   }
@@ -25,7 +25,7 @@ function renderTitle(title, subtitle, titleLevel) {
   return (
     <Flex vertical gap={4}>
       {title}
-      <Text type="secondary">{subtitle}</Text>
+      <Text type="secondary" style={{ fontSize: 12 }}>{subtitle}</Text>
     </Flex>
   );
 }
@@ -46,9 +46,9 @@ export function AppCard({
   children,
   ...props
 }) {
-  const resolvedTitleLevel = titleLevel ?? (size === 'small' ? 5 : 4);
+  const resolvedTitleLevel = titleLevel ?? (size === 'small' ? 5 : 5);
   const resolvedBodyGap = bodyGap ?? (size === 'small' ? 12 : 16);
-  const resolvedHeaderPaddingBlock = headerPaddingBlock ?? (size === 'small' ? 14 : 18);
+  const resolvedHeaderPaddingBlock = headerPaddingBlock ?? (size === 'small' ? 12 : 14);
   const renderedTitle = renderTitle(title, subtitle, resolvedTitleLevel);
 
   return (

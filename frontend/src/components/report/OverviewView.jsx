@@ -19,8 +19,8 @@ const performanceColumns = [
 ];
 
 export function OverviewView({ selectedScan, reportData }) {
-  const bundles = reportData?.bundles || [];
-  const counts = buildVerdictCounts(bundles);
+  const findings = reportData?.findings || reportData?.bundles || [];
+  const counts = buildVerdictCounts(findings);
   const performance = reportData?.performance_summary || {};
   const perTool = Object.entries(performance.per_tool || {})
     .sort((a, b) => b[1].total_duration_ms - a[1].total_duration_ms)
@@ -35,7 +35,7 @@ export function OverviewView({ selectedScan, reportData }) {
           <Descriptions.Item label="Repository">
             <span style={{ overflowWrap: 'anywhere' }}>{reportData?.repo_path || selectedScan?.workspace_path || 'n/a'}</span>
           </Descriptions.Item>
-          <Descriptions.Item label="Bundles">{reportData?.bundle_count ?? '-'}</Descriptions.Item>
+          <Descriptions.Item label="Findings">{reportData?.finding_count ?? reportData?.bundle_count ?? '-'}</Descriptions.Item>
           <Descriptions.Item label="Evidence">{reportData?.evidence_count ?? '-'}</Descriptions.Item>
           <Descriptions.Item label="Mode">
             <span style={{ overflowWrap: 'anywhere' }}>{reportData?.analysis_mode || selectedScan?.analysis_mode || 'n/a'}</span>
